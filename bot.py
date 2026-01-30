@@ -460,6 +460,7 @@ async def settings_panel(ctx):
     embed = discord.Embed(title="Settings Dashboard", description="Select a category below to configure the bot.", color=discord.Color.blurple())
     await ctx.send(embed=embed, view=MainSettingsView(bot))
 
+@bot.command(name='presentrole', aliases=['assignrole'])
 @commands.has_permissions(manage_roles=True)
 async def assign_attendance_role(ctx, role: discord.Role):
     """
