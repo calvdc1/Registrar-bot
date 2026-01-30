@@ -496,7 +496,7 @@ async def assign_excused_role(ctx, role: discord.Role):
     await ctx.send(f"Excused role has been set to {role.mention}.")
 
 
-async def update_user_status(ctx, member, status):
+async def update_user_status(ctx, member, status, reason=None):
     data = load_attendance_data()
     
     # Get all role IDs
@@ -535,23 +535,36 @@ async def update_user_status(ctx, member, status):
         if role:
             try:
                 await member.add_roles(role)
-                await ctx.send(f"Marked {member.mention} as **{status.upper()}** and gave them the {role.name} role.")
+                msg = f"Marked {member.mention} as **{status.upper()}** and gave them the {role.name} role."
+                if reason:
+                    msg += f"\nReason: {reason}"
+                await ctx.send(msg)
             except discord.Forbidden:
                 await ctx.send(f"Failed to give {status} role to {member.display_name} (Missing Permissions)")
         else:
-             await ctx.send(f"Marked {member.mention} as **{status.upper()}**, but the role for this status is not configured or deleted.")
+             msg = f"Marked {member.mention} as **{status.upper()}**, but the role for this status is not configured or deleted."
+             if reason:
+                 msg += f"\nReason: {reason}"
+             await ctx.send(msg)
     else:
-        await ctx.send(f"Marked {member.mention} as **{status.upper()}**. (No role configured for this status)")
+        msg = f"Marked {member.mention} as **{status.upper()}**. (No role configured for this status)"
+        if reason:
+            msg += f"\nReason: {reason}"
+        await ctx.send(msg)
 
     # Update JSON
     user_id = str(member.id)
     if 'records' not in data:
         data['records'] = {}
     
-    data['records'][user_id] = {
+    record = {
         "status": status,
         "timestamp": datetime.datetime.now().isoformat()
     }
+    if reason:
+        record["reason"] = reason
+        
+    data['records'][user_id] = record
     save_attendance_data(data)
 
 @bot.command(name='setpermitrole', aliases=['allowrole'])
@@ -613,10 +626,10 @@ async def mark_absent(ctx, member: discord.Member):
     await update_user_status(ctx, member, 'absent')
 
 @bot.command(name='excuse')
-async def mark_excuse(ctx, member: discord.Member):
+async def mark_excuse(ctx, member: discord.Member, *, reason: str):
     """
-    Marks a user as excused.
-    Usage: !excuse @User
+    Marks a user as excused with a reason.
+    Usage: !excuse @User I was sick
     """
     settings = load_settings()
     if settings.get('require_admin_excuse', True):
@@ -624,7 +637,12 @@ async def mark_excuse(ctx, member: discord.Member):
             await ctx.send("You do not have permission to excuse users.")
             return
 
-    await update_user_status(ctx, member, 'excused')
+    await update_user_status(ctx, member, 'excused', reason=reason)
+
+@mark_excuse.error
+async def mark_excuse_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Usage: `!excuse @User <reason>` (e.g., `!excuse @John I was sick`)")
 
 def create_attendance_embed(guild):
     data = load_attendance_data()
@@ -787,6 +805,23 @@ async def on_ready():
 
 # --- Persistent Views for Attendance ---
 
+class ExcuseModal(discord.ui.Modal, title="Excuse Reason"):
+    reason = discord.ui.TextInput(
+        label="Reason for being excused",
+        style=discord.TextStyle.paragraph,
+        placeholder="e.g., I was sick...",
+        required=True,
+        max_length=200
+    )
+
+    def __init__(self, view_instance):
+        super().__init__()
+        self.view_instance = view_instance
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.view_instance.handle_attendance(interaction, "excused", self.reason.value)
+        # handle_attendance handles the response
+
 class AttendanceView(discord.ui.View):
     def __init__(self, bot_instance):
         super().__init__(timeout=None) # Persistent view
@@ -796,19 +831,24 @@ class AttendanceView(discord.ui.View):
     async def btn_present(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_attendance(interaction, "present")
 
-    @discord.ui.button(label="Excused (Admin Only)", style=discord.ButtonStyle.secondary, custom_id="attendance_btn_excused", emoji="⚠️")
+    @discord.ui.button(label="Excused", style=discord.ButtonStyle.secondary, custom_id="attendance_btn_excused", emoji="⚠️")
     async def btn_excused(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check permission
+        # Check permission for admin only excuse is handled inside handle_attendance or here?
+        # The modal should open first, then we check? Or check first?
+        # Checking first is better UX.
+        
         settings = load_settings()
         if settings.get('require_admin_excuse', True) and not interaction.user.guild_permissions.manage_roles:
             await interaction.response.send_message("Only admins can mark users as excused.", ephemeral=True)
             return
-        await self.handle_attendance(interaction, "excused")
+            
+        # Open Modal to get reason
+        await interaction.response.send_modal(ExcuseModal(self))
 
-    async def handle_attendance(self, interaction, status):
+    async def handle_attendance(self, interaction, status, reason=None):
         user = interaction.user
         
-        # Check self-marking setting
+        # Check self-marking setting (only for present)
         settings = load_settings()
         if status == 'present' and not settings.get('allow_self_marking', True):
              await interaction.response.send_message("Self-marking is currently disabled.", ephemeral=True)
@@ -823,19 +863,23 @@ class AttendanceView(discord.ui.View):
                 await interaction.response.send_message(f"You need the {allowed_role.mention} role to use this.", ephemeral=True)
                 return
 
-        # Defer response since update_user_status sends messages
-        await interaction.response.defer(ephemeral=True)
+        # If it's a modal submission (interaction.type == modal_submit), we don't need to defer usually if we reply quickly.
+        # But process_status_update might take a moment.
+        if not interaction.response.is_done():
+             await interaction.response.defer(ephemeral=True)
         
-        # Re-use the existing logic logic, but adapt it since update_user_status expects a ctx
-        # We'll create a fake context or modify update_user_status. 
-        # For safety/cleanliness, let's call the core logic directly or mock ctx.
-        # It's better to refactor update_user_status to take (channel, member, status) instead of ctx, 
-        # but to minimize churn, we'll adapt here.
+        await self.process_status_update(interaction, user, status, reason)
         
-        await self.process_status_update(interaction, user, status)
-        await interaction.followup.send(f"Successfully marked as **{status.upper()}**!", ephemeral=True)
+        msg = f"Successfully marked as **{status.upper()}**!"
+        if reason:
+            msg += f"\nReason: {reason}"
+        
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
 
-    async def process_status_update(self, interaction, member, status):
+    async def process_status_update(self, interaction, member, status, reason=None):
         # Logic duplicated/adapted from update_user_status to avoid ctx dependency
         data = load_attendance_data()
         present_role_id = data.get('attendance_role_id')
@@ -876,10 +920,15 @@ class AttendanceView(discord.ui.View):
         user_id = str(member.id)
         if 'records' not in data:
             data['records'] = {}
-        data['records'][user_id] = {
+        
+        record = {
             "status": status,
             "timestamp": datetime.datetime.now().isoformat()
         }
+        if reason:
+            record["reason"] = reason
+            
+        data['records'][user_id] = record
         save_attendance_data(data)
 
 @bot.command(name='setup_attendance')
