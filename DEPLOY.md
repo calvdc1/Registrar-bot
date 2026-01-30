@@ -3,53 +3,35 @@
 To keep your bot running 24/7 without your computer being on, you need to host it on a cloud server. Here is the easiest free method using **Render**.
 
 ## Prerequisites
-Ensure you have uploaded these 5 files to your GitHub repository:
-1. `bot.py`
-2. `requirements.txt`
-3. `keep_alive.py`
-4. `Procfile`
-5. `attendance_data.json`
+- A [Render.com](https://render.com) account.
+- A [GitHub](https://github.com) account.
+- Your Discord Bot Token.
 
-*(Do NOT upload `.env`)*
+## Deployment Steps
 
-## Step-by-Step Guide
+1. **Fork/Clone this Repository**: Ensure you have this code in your own GitHub repository.
+2. **Create a New Web Service on Render**:
+   - Go to your Render Dashboard.
+   - Click **New +** -> **Web Service**.
+   - Connect your GitHub repository.
+3. **Configure the Service**:
+   - **Name**: Give your bot a name.
+   - **Runtime**: Python 3
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python bot.py`
+   - **Plan**: Free
+4. **Environment Variables**:
+   - Scroll down to "Environment Variables".
+   - Add Key: `DISCORD_TOKEN`
+   - Value: (Paste your actual bot token here)
+   - Add Key: `PYTHON_VERSION` (Optional, code handles this via .python-version file now)
+   - Value: `3.10.12`
+5. **Deploy**: Click **Create Web Service**.
 
-### 1. Create Account on Render
-1. Go to [dashboard.render.com](https://dashboard.render.com/register).
-2. Sign up using your **GitHub** account (this makes it easier to link your code).
-
-### 2. Create a Web Service
-1. On the dashboard, click the **"New +"** button (top right).
-2. Select **"Web Service"**.
-3. Click **"Build and deploy from a Git repository"**.
-4. You should see your `autonickname-bot` repository in the list. Click **"Connect"**.
-
-### 3. Configure the Service
-Fill in the form with these exact settings:
-
-| Setting | Value |
-| :--- | :--- |
-| **Name** | `autonickname-bot` (or any name you like) |
-| **Region** | Choose the one closest to you (e.g., Singapore, Oregon) |
-| **Branch** | `main` |
-| **Runtime** | **Python 3** |
-| **Build Command** | `pip install -r requirements.txt` |
-| **Start Command** | `python bot.py` |
-| **Instance Type** | **Free** ($0/month) |
-
-### 4. Add Your Password (Token)
-1. Scroll down to the **"Environment Variables"** section.
-2. Click **"Add Environment Variable"**.
-3. Enter these details:
-   - **Key:** `DISCORD_TOKEN`
-   - **Value:** *(Copy the token from your `.env` file and paste it here)*
-4. Click **"Create Web Service"**.
-
-### 5. Wait for Deployment
-- Render will now download your code and install dependencies.
-- Watch the logs window.
-- When you see **"Bot is ready to auto-nickname users!"**, your bot is online!
-- **Copy your App URL:** It will look like `https://autonickname-bot.onrender.com`. You need this for the next step.
+## Troubleshooting
+- **Bot not starting?** Check the "Logs" tab in Render.
+- **"Invalid Syntax"?** Ensure Render is using Python 3.10+ (The included `.python-version` file should handle this).
+- **Attendance not saving?** On the free tier, files are not persistent. Settings will reset if the bot restarts.
 
 ---
 
