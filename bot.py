@@ -560,7 +560,8 @@ async def update_user_status(ctx, member, status, reason=None):
     
     record = {
         "status": status,
-        "timestamp": datetime.datetime.now().isoformat()
+        "timestamp": datetime.datetime.now().isoformat(),
+        "channel_id": ctx.channel.id
     }
     if reason:
         record["reason"] = reason
@@ -741,6 +742,7 @@ async def check_attendance_expiry():
         'absent': data.get('absent_role_id'),
         'excused': data.get('excused_role_id')
     }
+    ping_role_id = data.get('ping_role_id')
 
     now = datetime.datetime.now()
     users_to_remove = []
@@ -750,10 +752,11 @@ async def check_attendance_expiry():
         for user_id_str, info in records.items():
             # Handle migration/fallback
             if isinstance(info, str):
-                info = {"status": "present", "timestamp": info}
+                info = {"status": "present", "timestamp": info, "channel_id": None}
             
             timestamp_str = info.get('timestamp')
             status = info.get('status', 'present')
+            channel_id = info.get('channel_id')
             role_id = role_map.get(status)
 
             if not timestamp_str:
@@ -776,6 +779,29 @@ async def check_attendance_expiry():
                             try:
                                 await member.remove_roles(role)
                                 logger.info(f"Removed {status} role from {member.name} (expired)")
+                                
+                                # Notification Logic
+                                channel = None
+                                if channel_id:
+                                    channel = guild.get_channel(channel_id)
+                                
+                                # Fallback channel if specific channel is gone or not recorded
+                                if not channel and data.get('welcome_channel_id'):
+                                    channel = guild.get_channel(data.get('welcome_channel_id'))
+                                    
+                                if channel:
+                                    msg_content = f"{member.mention}, your attendance session has expired (12 hours)."
+                                    
+                                    # Ping Notification Role if set
+                                    if ping_role_id:
+                                        ping_role = guild.get_role(ping_role_id)
+                                        if ping_role:
+                                            msg_content = f"{ping_role.mention} " + msg_content
+                                            
+                                    msg_content += f"\nYou are now allowed to say **present** again."
+                                    
+                                    await channel.send(msg_content)
+                                    
                             except discord.Forbidden:
                                 logger.warning(f"Failed to remove role from {member.name}: Missing Permissions")
                     
