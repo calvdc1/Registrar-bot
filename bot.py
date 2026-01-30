@@ -89,35 +89,38 @@ async def remove_nickname(member):
 @bot.event
 async def on_member_join(member):
     print(f"Member joined: {member.name}")
-    await apply_nickname(member)
+    # Auto-nickname disabled by request
+    # await apply_nickname(member)
 
 @bot.event
 async def on_member_update(before, after):
+    # Auto-nickname disabled by request
+    pass
     # Check if roles have changed
-    if len(before.roles) < len(after.roles):
-        # A role was added
-        new_roles = [role for role in after.roles if role not in before.roles]
-        for role in new_roles:
-            print(f"User {after.name} received role: {role.name}")
+    # if len(before.roles) < len(after.roles):
+    #     # A role was added
+    #     new_roles = [role for role in after.roles if role not in before.roles]
+    #     for role in new_roles:
+    #         print(f"User {after.name} received role: {role.name}")
             
-            if TRIGGER_ROLE_NAME:
-                if role.name == TRIGGER_ROLE_NAME:
-                    await apply_nickname(after)
-            else:
-                await apply_nickname(after)
+    #         if TRIGGER_ROLE_NAME:
+    #             if role.name == TRIGGER_ROLE_NAME:
+    #                 await apply_nickname(after)
+    #         else:
+    #             await apply_nickname(after)
 
-    elif len(before.roles) > len(after.roles):
-        # A role was removed
-        removed_roles = [role for role in before.roles if role not in after.roles]
-        for role in removed_roles:
-            print(f"User {after.name} lost role: {role.name}")
+    # elif len(before.roles) > len(after.roles):
+    #     # A role was removed
+    #     removed_roles = [role for role in before.roles if role not in after.roles]
+    #     for role in removed_roles:
+    #         print(f"User {after.name} lost role: {role.name}")
             
-            if TRIGGER_ROLE_NAME:
-                if role.name == TRIGGER_ROLE_NAME:
-                    await remove_nickname(after)
-            else:
-                if len(after.roles) <= 1:
-                     await remove_nickname(after)
+    #         if TRIGGER_ROLE_NAME:
+    #             if role.name == TRIGGER_ROLE_NAME:
+    #                 await remove_nickname(after)
+    #         else:
+    #             if len(after.roles) <= 1:
+    #                  await remove_nickname(after)
 
 @bot.command(name='setnick')
 @commands.has_permissions(manage_nicknames=True)
@@ -244,12 +247,12 @@ def save_attendance_data(data):
     with open(ATTENDANCE_FILE, 'w') as f:
         json.dump(data, f, indent=4)
 
-@bot.command(name='assignrole')
+@bot.command(name='presentrole', aliases=['assignrole'])
 @commands.has_permissions(manage_roles=True)
 async def assign_attendance_role(ctx, role: discord.Role):
     """
     Sets the role that users receive when they say 'present'.
-    Usage: !assignrole @Role
+    Usage: !presentrole @Role (or !assignrole @Role)
     """
     data = load_attendance_data()
     data['attendance_role_id'] = role.id
@@ -338,6 +341,50 @@ async def update_user_status(ctx, member, status):
         "timestamp": datetime.datetime.now().isoformat()
     }
     save_attendance_data(data)
+
+@bot.command(name='setpermitrole', aliases=['allowrole'])
+@commands.has_permissions(manage_roles=True)
+async def set_permit_role(ctx, role: discord.Role = None):
+    """
+    Sets the role required to use the 'present' command.
+    Usage: !setpermitrole @Role
+    Usage: !setpermitrole (to reset/allow everyone)
+    """
+    data = load_attendance_data()
+    if role:
+        data['allowed_role_id'] = role.id
+        await ctx.send(f"Permission Updated: Only users with the {role.mention} role can mark attendance.")
+    else:
+        data['allowed_role_id'] = None
+        await ctx.send("Permission Updated: Everyone can now mark attendance.")
+    
+    save_attendance_data(data)
+
+@bot.command(name='present')
+async def mark_present(ctx, member: discord.Member = None):
+    """
+    Marks a user as present.
+    Usage: !present (for yourself)
+    Usage: !present @User (requires Manage Roles)
+    """
+    if member is None:
+        member = ctx.author
+
+    # Check for required role if marking self
+    if member == ctx.author:
+        data = load_attendance_data()
+        allowed_role_id = data.get('allowed_role_id')
+        if allowed_role_id:
+            allowed_role = ctx.guild.get_role(allowed_role_id)
+            if allowed_role and allowed_role not in ctx.author.roles:
+                await ctx.send(f"You need the {allowed_role.mention} role to mark attendance.")
+                return
+
+    if member != ctx.author and not ctx.author.guild_permissions.manage_roles:
+        await ctx.send("You do not have permission to mark others as present.")
+        return
+
+    await update_user_status(ctx, member, 'present')
 
 @bot.command(name='absent')
 @commands.has_permissions(manage_roles=True)
@@ -522,6 +569,16 @@ async def on_message(message):
     # Attendance check logic
     if message.content.strip().lower() == "present":
         data = load_attendance_data()
+        
+        # Check permissions
+        allowed_role_id = data.get('allowed_role_id')
+        if allowed_role_id:
+            allowed_role = message.guild.get_role(allowed_role_id)
+            if allowed_role and allowed_role not in message.author.roles:
+                # Silently ignore or maybe react with ❌? 
+                # Better to ignore to prevent spam if they don't have perms.
+                return
+
         attendance_role_id = data.get('attendance_role_id')
         absent_role_id = data.get('absent_role_id')
         excused_role_id = data.get('excused_role_id')
