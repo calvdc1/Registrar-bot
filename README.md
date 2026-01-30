@@ -46,6 +46,11 @@ First, set up the roles you want to use:
 3. **Excused Role**: `!excuserole @ExcusedRole`
 4. **(Optional) Restrict Access**: `!setpermitrole @Role` (Only allow this role to mark present)
 
+## Logging
+The bot automatically logs important events and errors to both the console and a file named `bot.log`. 
+- **Console**: Useful for real-time monitoring.
+- **bot.log**: Keeps a persistent history of events (ignored by git).
+
 ## Commands Reference
 
 | Command | Permission | Description |

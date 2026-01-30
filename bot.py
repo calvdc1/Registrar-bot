@@ -2,6 +2,7 @@ import os
 import json
 import datetime
 import asyncio
+import logging
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
@@ -11,6 +12,17 @@ from keep_alive import keep_alive
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 ATTENDANCE_FILE = "attendance_data.json"
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log", encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Configure intents
 intents = discord.Intents.default()
@@ -54,14 +66,14 @@ async def apply_nickname(member):
         else:
             new_nick = current_name + SUFFIX
             
-        print(f'Attempting to change nickname for {member.name} to {new_nick}')
+        logger.info(f'Attempting to change nickname for {member.name} to {new_nick}')
         await member.edit(nick=new_nick)
-        print(f'Successfully changed nickname for {member.name} to {new_nick}')
+        logger.info(f'Successfully changed nickname for {member.name} to {new_nick}')
         
     except discord.Forbidden:
-        print(f"Failed to change nickname for {member.name}: Missing Permissions (Check role hierarchy)")
+        logger.warning(f"Failed to change nickname for {member.name}: Missing Permissions (Check role hierarchy)")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
 
 async def remove_nickname(member):
     """Helper function to remove the nickname suffix."""
@@ -76,19 +88,19 @@ async def remove_nickname(member):
             if not new_nick.strip():
                 new_nick = member.name
             
-            print(f'Attempting to remove nickname suffix for {member.name} to {new_nick}')
+            logger.info(f'Attempting to remove nickname suffix for {member.name} to {new_nick}')
             await member.edit(nick=new_nick)
-            print(f'Successfully removed nickname suffix for {member.name}')
+            logger.info(f'Successfully removed nickname suffix for {member.name}')
             
     except discord.Forbidden:
-        print(f"Failed to remove nickname for {member.name}: Missing Permissions (Check role hierarchy)")
+        logger.warning(f"Failed to remove nickname for {member.name}: Missing Permissions (Check role hierarchy)")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
 
 
 @bot.event
 async def on_member_join(member):
-    print(f"Member joined: {member.name}")
+    logger.info(f"Member joined: {member.name}")
     # Auto-nickname disabled by request
     # await apply_nickname(member)
 
@@ -169,7 +181,7 @@ async def nick(ctx, *, name: str = None):
     Usage: !nick NewName
     Usage: !nick remove (to remove the suffix)
     """
-    print(f"Command !nick triggered by {ctx.author}")
+    logger.info(f"Command !nick triggered by {ctx.author}")
     member = ctx.author
     
     if name is None:
@@ -204,15 +216,15 @@ async def nick(ctx, *, name: str = None):
             else:
                 new_nick = name
                 
-            print(f"Changing nickname for {member} to {new_nick}")
+            logger.info(f"Changing nickname for {member} to {new_nick}")
             await member.edit(nick=new_nick)
             await ctx.send(f"Successfully changed nickname for {member.mention} to `{new_nick}`")
             
         except discord.Forbidden:
-            print("Forbidden: Cannot change nickname.")
+            logger.warning("Forbidden: Cannot change nickname.")
             await ctx.send("Failed: I don't have permission to change your nickname. Ensure my role is higher than yours in the server settings.")
         except Exception as e:
-            print(f"Error in !nick: {e}")
+            logger.error(f"Error in !nick: {e}")
             await ctx.send(f"An error occurred: {e}")
 
 @nick.error
@@ -531,15 +543,15 @@ async def check_attendance_expiry():
                         if role and role in member.roles:
                             try:
                                 await member.remove_roles(role)
-                                print(f"Removed {status} role from {member.name} (expired)")
+                                logger.info(f"Removed {status} role from {member.name} (expired)")
                             except discord.Forbidden:
-                                print(f"Failed to remove role from {member.name}: Missing Permissions")
+                                logger.warning(f"Failed to remove role from {member.name}: Missing Permissions")
                     
                     # Mark for removal from records
                     users_to_remove.append(user_id_str)
                     
             except (ValueError, TypeError) as e:
-                print(f"Error parsing timestamp for user {user_id_str}: {e}")
+                logger.error(f"Error parsing timestamp for user {user_id_str}: {e}")
                 users_to_remove.append(user_id_str)
 
     if users_to_remove:
@@ -552,8 +564,8 @@ async def check_attendance_expiry():
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user.name}')
-    print('Bot is ready to auto-nickname users!')
+    logger.info(f'Logged in as {bot.user.name}')
+    logger.info('Bot is ready to auto-nickname users!')
     if not check_attendance_expiry.is_running():
         check_attendance_expiry.start()
 
