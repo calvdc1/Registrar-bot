@@ -46,6 +46,17 @@ First, set up the roles you want to use:
 3. **Excused Role**: `!excuserole @ExcusedRole`
 4. **(Optional) Restrict Access**: `!setpermitrole @Role` (Only allow this role to mark present)
 
+## Interactive Configuration (New!)
+Use the `!settings` command to open an interactive dashboard where you can configure:
+- **System**: Debug mode, etc.
+- **Auto-Nickname**: Suffix format, auto-add behavior, enforcement.
+- **Attendance**: Expiry time (12h/24h/48h), self-marking permission, admin-only excuse.
+- **Presence**: Set the bot's "Playing" or "Watching" status.
+
+## Persistent Attendance UI
+You can create a permanent "Check-In" message with buttons using:
+- `!setup_attendance`: Posts a message with "Mark Present" and "Excused" buttons.
+
 ## Logging
 The bot automatically logs important events and errors to both the console and a file named `bot.log`. 
 - **Console**: Useful for real-time monitoring.
@@ -55,6 +66,8 @@ The bot automatically logs important events and errors to both the console and a
 
 | Command | Permission | Description |
 | :--- | :--- | :--- |
+| `!settings` | Administrator | Open the configuration dashboard. |
+| `!setup_attendance` | Administrator | Create a message with attendance buttons. |
 | `!nick <Name>` | Everyone | Change your own nickname. |
 | `!nick remove` | Everyone | Remove the suffix from your name. |
 | `!setnick @User <Name>` | Manage Nicknames | Change another user's nickname. |

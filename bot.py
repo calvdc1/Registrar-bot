@@ -51,20 +51,23 @@ def can_manage_nick(ctx, member):
 
 async def apply_nickname(member):
     """Helper function to apply the nickname suffix."""
+    settings = load_settings()
+    suffix = settings.get("suffix_format", SUFFIX)
+    
     try:
         current_name = member.display_name
         
         # Avoid double tagging if they already have the suffix
-        if current_name.endswith(SUFFIX):
+        if current_name.endswith(suffix):
             return
 
         # Truncate original name if necessary to fit the suffix within 32 chars (Discord limit)
-        max_name_length = 32 - len(SUFFIX)
+        max_name_length = 32 - len(suffix)
         
         if len(current_name) > max_name_length:
-            new_nick = current_name[:max_name_length] + SUFFIX
+            new_nick = current_name[:max_name_length] + suffix
         else:
-            new_nick = current_name + SUFFIX
+            new_nick = current_name + suffix
             
         logger.info(f'Attempting to change nickname for {member.name} to {new_nick}')
         await member.edit(nick=new_nick)
@@ -77,12 +80,15 @@ async def apply_nickname(member):
 
 async def remove_nickname(member):
     """Helper function to remove the nickname suffix."""
+    settings = load_settings()
+    suffix = settings.get("suffix_format", SUFFIX)
+    
     try:
         current_name = member.display_name
         
         # Only attempt removal if the suffix exists
-        if current_name.endswith(SUFFIX):
-            new_nick = current_name[:-len(SUFFIX)]
+        if current_name.endswith(suffix):
+            new_nick = current_name[:-len(suffix)]
             
             # If the name becomes empty (edge case), don't change it or revert to name
             if not new_nick.strip():
@@ -101,13 +107,26 @@ async def remove_nickname(member):
 @bot.event
 async def on_member_join(member):
     logger.info(f"Member joined: {member.name}")
-    # Auto-nickname disabled by request
-    # await apply_nickname(member)
+    settings = load_settings()
+    if settings.get("auto_nick_on_join", False):
+        await apply_nickname(member)
 
 @bot.event
 async def on_member_update(before, after):
-    # Auto-nickname disabled by request
+    settings = load_settings()
+    
+    # Enforce Suffix
+    if settings.get("enforce_suffix", False):
+        # Check if nickname changed and suffix was removed
+        if before.display_name != after.display_name:
+             suffix = settings.get("suffix_format", SUFFIX)
+             if not after.display_name.endswith(suffix):
+                 await apply_nickname(after)
+
+    # Remove on Role Loss (placeholder logic)
     pass
+    # Auto-nickname disabled by request
+    # pass
     # Check if roles have changed
     # if len(before.roles) < len(after.roles):
     #     # A role was added
@@ -206,13 +225,15 @@ async def nick(ctx, *, name: str = None):
                 return
 
             # Check if the suffix is already in the provided name, if not, append it
-            if not name.endswith(SUFFIX):
+            settings = load_settings()
+            suffix = settings.get("suffix_format", SUFFIX)
+            if not name.endswith(suffix):
                  # Truncate if necessary
-                max_name_length = 32 - len(SUFFIX)
+                max_name_length = 32 - len(suffix)
                 if len(name) > max_name_length:
-                    new_nick = name[:max_name_length] + SUFFIX
+                    new_nick = name[:max_name_length] + suffix
                 else:
-                    new_nick = name + SUFFIX
+                    new_nick = name + suffix
             else:
                 new_nick = name
                 
@@ -253,13 +274,192 @@ def load_attendance_data():
     except FileNotFoundError:
         return {"attendance_role_id": None, "absent_role_id": None, "excused_role_id": None, "welcome_channel_id": None, "records": {}}
     except json.JSONDecodeError:
-        return {"attendance_role_id": None, "absent_role_id": None, "excused_role_id": None, "welcome_channel_id": None, "records": {}}
+        return {"attendance_role_id": None, "absent_role_id": None, "excused_role_id": None, "welcome_channel_id": None, "records": {}, "settings": {}}
+
+def load_settings():
+    """Helper to get settings with defaults"""
+    data = load_attendance_data()
+    defaults = {
+        "debug_mode": False,
+        "auto_nick_on_join": False,
+        "enforce_suffix": False,
+        "remove_suffix_on_role_loss": False,
+        "attendance_expiry_hours": 24,
+        "allow_self_marking": True,
+        "require_admin_excuse": True,
+        "suffix_format": " [𝙼𝚂𝚄𝚊𝚗]"
+    }
+    settings = data.get("settings", {})
+    # Merge defaults
+    for k, v in defaults.items():
+        if k not in settings:
+            settings[k] = v
+    return settings
+
+def save_settings(settings):
+    data = load_attendance_data()
+    data["settings"] = settings
+    save_attendance_data(data)
 
 def save_attendance_data(data):
     with open(ATTENDANCE_FILE, 'w') as f:
         json.dump(data, f, indent=4)
 
-@bot.command(name='presentrole', aliases=['assignrole'])
+# --- Configuration Views ---
+
+class SettingsSelect(discord.ui.Select):
+    def __init__(self, bot_instance):
+        options = [
+            discord.SelectOption(label="System Settings", description="Debug Mode, Sync Commands", emoji="⚙️"),
+            discord.SelectOption(label="Auto-Nickname", description="Suffix, Auto-Add, Enforce", emoji="📝"),
+            discord.SelectOption(label="Attendance Settings", description="Expiry, Self-Marking, Admin Only", emoji="📅"),
+            discord.SelectOption(label="Presence", description="Set Bot Status", emoji="🤖")
+        ]
+        super().__init__(placeholder="Select a category to configure...", min_values=1, max_values=1, options=options)
+        self.bot_instance = bot_instance
+
+    async def callback(self, interaction: discord.Interaction):
+        category = self.values[0]
+        settings = load_settings()
+        
+        if category == "System Settings":
+            view = SystemSettingsView(settings)
+            embed = discord.Embed(title="System Settings", color=discord.Color.blue())
+            embed.add_field(name="Debug Mode", value="Enabled" if settings['debug_mode'] else "Disabled")
+            await interaction.response.edit_message(embed=embed, view=view)
+            
+        elif category == "Auto-Nickname":
+            view = AutoNickSettingsView(settings)
+            embed = discord.Embed(title="Auto-Nickname Configuration", color=discord.Color.green())
+            embed.add_field(name="Suffix Format", value=f"`{settings['suffix_format']}`", inline=False)
+            embed.add_field(name="Auto-Add on Join", value=str(settings['auto_nick_on_join']))
+            embed.add_field(name="Enforce Suffix", value=str(settings['enforce_suffix']))
+            embed.add_field(name="Remove on Role Loss", value=str(settings['remove_suffix_on_role_loss']))
+            await interaction.response.edit_message(embed=embed, view=view)
+            
+        elif category == "Attendance Settings":
+            view = AttendanceSettingsView(settings)
+            embed = discord.Embed(title="Attendance Settings", color=discord.Color.orange())
+            embed.add_field(name="Auto-Expiry (Hours)", value=str(settings['attendance_expiry_hours']))
+            embed.add_field(name="Allow Self-Marking", value=str(settings['allow_self_marking']))
+            embed.add_field(name="Require Admin for Excuse", value=str(settings['require_admin_excuse']))
+            await interaction.response.edit_message(embed=embed, view=view)
+            
+        elif category == "Presence":
+            await interaction.response.send_modal(PresenceModal(self.bot_instance))
+
+class PresenceModal(discord.ui.Modal, title="Set Bot Presence"):
+    status_type = discord.ui.TextInput(label="Type (playing, watching, listening)", placeholder="playing")
+    status_text = discord.ui.TextInput(label="Status Text", placeholder="Managing Attendance")
+
+    def __init__(self, bot_instance):
+        super().__init__()
+        self.bot_instance = bot_instance
+
+    async def on_submit(self, interaction: discord.Interaction):
+        activity_type = discord.ActivityType.playing
+        if self.status_type.value.lower() == 'watching':
+            activity_type = discord.ActivityType.watching
+        elif self.status_type.value.lower() == 'listening':
+            activity_type = discord.ActivityType.listening
+            
+        await self.bot_instance.change_presence(activity=discord.Activity(type=activity_type, name=self.status_text.value))
+        await interaction.response.send_message(f"Presence updated to: {self.status_type.value} {self.status_text.value}", ephemeral=True)
+
+class BaseSettingsView(discord.ui.View):
+    def __init__(self, settings):
+        super().__init__(timeout=180)
+        self.settings = settings
+
+    async def update_message(self, interaction, embed):
+        save_settings(self.settings)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Back to Main Menu", style=discord.ButtonStyle.secondary, row=4)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=discord.Embed(title="Settings Dashboard", description="Select a category below."), view=MainSettingsView(interaction.client))
+
+class SystemSettingsView(BaseSettingsView):
+    @discord.ui.button(label="Toggle Debug Mode", style=discord.ButtonStyle.primary)
+    async def toggle_debug(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.settings['debug_mode'] = not self.settings['debug_mode']
+        
+        # Apply logging change immediately
+        if self.settings['debug_mode']:
+            logger.setLevel(logging.DEBUG)
+            logging.getLogger().setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
+            logging.getLogger().setLevel(logging.INFO)
+            
+        embed = interaction.message.embeds[0]
+        embed.set_field_at(0, name="Debug Mode", value="Enabled" if self.settings['debug_mode'] else "Disabled")
+        await self.update_message(interaction, embed)
+
+class AutoNickSettingsView(BaseSettingsView):
+    @discord.ui.button(label="Toggle Auto-Add on Join", style=discord.ButtonStyle.primary)
+    async def toggle_auto_add(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.settings['auto_nick_on_join'] = not self.settings['auto_nick_on_join']
+        self.update_embed(interaction.message.embeds[0])
+        await self.update_message(interaction, interaction.message.embeds[0])
+
+    @discord.ui.button(label="Toggle Enforce Suffix", style=discord.ButtonStyle.primary)
+    async def toggle_enforce(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.settings['enforce_suffix'] = not self.settings['enforce_suffix']
+        self.update_embed(interaction.message.embeds[0])
+        await self.update_message(interaction, interaction.message.embeds[0])
+
+    @discord.ui.button(label="Toggle Remove on Role Loss", style=discord.ButtonStyle.primary)
+    async def toggle_remove(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.settings['remove_suffix_on_role_loss'] = not self.settings['remove_suffix_on_role_loss']
+        self.update_embed(interaction.message.embeds[0])
+        await self.update_message(interaction, interaction.message.embeds[0])
+
+    def update_embed(self, embed):
+        embed.set_field_at(1, name="Auto-Add on Join", value=str(self.settings['auto_nick_on_join']))
+        embed.set_field_at(2, name="Enforce Suffix", value=str(self.settings['enforce_suffix']))
+        embed.set_field_at(3, name="Remove on Role Loss", value=str(self.settings['remove_suffix_on_role_loss']))
+
+class AttendanceSettingsView(BaseSettingsView):
+    @discord.ui.button(label="Toggle Self-Marking", style=discord.ButtonStyle.primary)
+    async def toggle_self_mark(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.settings['allow_self_marking'] = not self.settings['allow_self_marking']
+        self.update_embed(interaction.message.embeds[0])
+        await self.update_message(interaction, interaction.message.embeds[0])
+
+    @discord.ui.button(label="Toggle Admin Only Excuse", style=discord.ButtonStyle.primary)
+    async def toggle_admin_excuse(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.settings['require_admin_excuse'] = not self.settings['require_admin_excuse']
+        self.update_embed(interaction.message.embeds[0])
+        await self.update_message(interaction, interaction.message.embeds[0])
+
+    @discord.ui.select(placeholder="Select Expiry Time", options=[
+        discord.SelectOption(label="12 Hours", value="12"),
+        discord.SelectOption(label="24 Hours", value="24"),
+        discord.SelectOption(label="48 Hours", value="48")
+    ])
+    async def select_expiry(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.settings['attendance_expiry_hours'] = int(select.values[0])
+        self.update_embed(interaction.message.embeds[0])
+        await self.update_message(interaction, interaction.message.embeds[0])
+
+    def update_embed(self, embed):
+        embed.set_field_at(0, name="Auto-Expiry (Hours)", value=str(self.settings['attendance_expiry_hours']))
+        embed.set_field_at(1, name="Allow Self-Marking", value=str(self.settings['allow_self_marking']))
+        embed.set_field_at(2, name="Require Admin for Excuse", value=str(self.settings['require_admin_excuse']))
+
+class MainSettingsView(discord.ui.View):
+    def __init__(self, bot_instance):
+        super().__init__()
+        self.add_item(SettingsSelect(bot_instance))
+
+@bot.command(name='settings', aliases=['panel', 'config'])
+@commands.has_permissions(administrator=True)
+async def settings_panel(ctx):
+    """Opens the interactive settings dashboard."""
+    embed = discord.Embed(title="Settings Dashboard", description="Select a category below to configure the bot.", color=discord.Color.blurple())
+    await ctx.send(embed=embed, view=MainSettingsView(bot))
+
 @commands.has_permissions(manage_roles=True)
 async def assign_attendance_role(ctx, role: discord.Role):
     """
@@ -384,6 +584,11 @@ async def mark_present(ctx, member: discord.Member = None):
 
     # Check for required role if marking self
     if member == ctx.author:
+        settings = load_settings()
+        if not settings.get('allow_self_marking', True):
+            await ctx.send("Self-marking is currently disabled.")
+            return
+
         data = load_attendance_data()
         allowed_role_id = data.get('allowed_role_id')
         if allowed_role_id:
@@ -408,12 +613,17 @@ async def mark_absent(ctx, member: discord.Member):
     await update_user_status(ctx, member, 'absent')
 
 @bot.command(name='excuse')
-@commands.has_permissions(manage_roles=True)
 async def mark_excuse(ctx, member: discord.Member):
     """
     Marks a user as excused.
     Usage: !excuse @User
     """
+    settings = load_settings()
+    if settings.get('require_admin_excuse', True):
+        if not ctx.author.guild_permissions.manage_roles:
+            await ctx.send("You do not have permission to excuse users.")
+            return
+
     await update_user_status(ctx, member, 'excused')
 
 def create_attendance_embed(guild):
@@ -501,6 +711,9 @@ async def assign_role_error(ctx, error):
 @tasks.loop(minutes=1)
 async def check_attendance_expiry():
     data = load_attendance_data()
+    settings = data.get("settings", {})
+    expiry_hours = settings.get("attendance_expiry_hours", 24) # Default to 24 hours now
+    
     records = data.get('records', {})
     
     # Get all role IDs
@@ -533,8 +746,8 @@ async def check_attendance_expiry():
                 # Be robust to non-string timestamps by coercing to string
                 timestamp = datetime.datetime.fromisoformat(str(timestamp_str))
                 
-                # Check if 12 hours have passed
-                if now - timestamp > datetime.timedelta(hours=12):
+                # Check if X hours have passed
+                if now - timestamp > datetime.timedelta(hours=expiry_hours):
                     user_id = int(user_id_str)
                     member = guild.get_member(user_id)
                     
@@ -568,6 +781,118 @@ async def on_ready():
     logger.info('Bot is ready to auto-nickname users!')
     if not check_attendance_expiry.is_running():
         check_attendance_expiry.start()
+    
+    # Register persistent views
+    bot.add_view(AttendanceView(bot))
+
+# --- Persistent Views for Attendance ---
+
+class AttendanceView(discord.ui.View):
+    def __init__(self, bot_instance):
+        super().__init__(timeout=None) # Persistent view
+        self.bot_instance = bot_instance
+
+    @discord.ui.button(label="Mark Present", style=discord.ButtonStyle.success, custom_id="attendance_btn_present", emoji="✅")
+    async def btn_present(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_attendance(interaction, "present")
+
+    @discord.ui.button(label="Excused (Admin Only)", style=discord.ButtonStyle.secondary, custom_id="attendance_btn_excused", emoji="⚠️")
+    async def btn_excused(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Check permission
+        settings = load_settings()
+        if settings.get('require_admin_excuse', True) and not interaction.user.guild_permissions.manage_roles:
+            await interaction.response.send_message("Only admins can mark users as excused.", ephemeral=True)
+            return
+        await self.handle_attendance(interaction, "excused")
+
+    async def handle_attendance(self, interaction, status):
+        user = interaction.user
+        
+        # Check self-marking setting
+        settings = load_settings()
+        if status == 'present' and not settings.get('allow_self_marking', True):
+             await interaction.response.send_message("Self-marking is currently disabled.", ephemeral=True)
+             return
+
+        # Check permitted role
+        data = load_attendance_data()
+        allowed_role_id = data.get('allowed_role_id')
+        if allowed_role_id:
+            allowed_role = interaction.guild.get_role(allowed_role_id)
+            if allowed_role and allowed_role not in user.roles:
+                await interaction.response.send_message(f"You need the {allowed_role.mention} role to use this.", ephemeral=True)
+                return
+
+        # Defer response since update_user_status sends messages
+        await interaction.response.defer(ephemeral=True)
+        
+        # Re-use the existing logic logic, but adapt it since update_user_status expects a ctx
+        # We'll create a fake context or modify update_user_status. 
+        # For safety/cleanliness, let's call the core logic directly or mock ctx.
+        # It's better to refactor update_user_status to take (channel, member, status) instead of ctx, 
+        # but to minimize churn, we'll adapt here.
+        
+        await self.process_status_update(interaction, user, status)
+        await interaction.followup.send(f"Successfully marked as **{status.upper()}**!", ephemeral=True)
+
+    async def process_status_update(self, interaction, member, status):
+        # Logic duplicated/adapted from update_user_status to avoid ctx dependency
+        data = load_attendance_data()
+        present_role_id = data.get('attendance_role_id')
+        absent_role_id = data.get('absent_role_id')
+        excused_role_id = data.get('excused_role_id')
+        
+        target_role_id = None
+        roles_to_remove = []
+        
+        if status == 'present':
+            target_role_id = present_role_id
+            if absent_role_id: roles_to_remove.append(absent_role_id)
+            if excused_role_id: roles_to_remove.append(excused_role_id)
+        elif status == 'excused':
+            target_role_id = excused_role_id
+            if present_role_id: roles_to_remove.append(present_role_id)
+            if absent_role_id: roles_to_remove.append(absent_role_id)
+            
+        guild = interaction.guild
+        
+        # Remove roles
+        for rid in roles_to_remove:
+            role = guild.get_role(rid)
+            if role and role in member.roles:
+                try:
+                    await member.remove_roles(role)
+                except: pass
+
+        # Add role
+        if target_role_id:
+            role = guild.get_role(target_role_id)
+            if role:
+                try:
+                    await member.add_roles(role)
+                except: pass
+        
+        # Save record
+        user_id = str(member.id)
+        if 'records' not in data:
+            data['records'] = {}
+        data['records'][user_id] = {
+            "status": status,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        save_attendance_data(data)
+
+@bot.command(name='setup_attendance')
+@commands.has_permissions(administrator=True)
+async def setup_attendance_ui(ctx):
+    """Posts the persistent attendance buttons."""
+    embed = discord.Embed(
+        title="Attendance Check-In", 
+        description="Click the button below to mark your attendance.", 
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed, view=AttendanceView(bot))
+
 
 @bot.event
 async def on_message(message):
