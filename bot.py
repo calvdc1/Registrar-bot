@@ -382,10 +382,15 @@ def create_attendance_embed(guild):
         elif status == 'excused':
             excused_list.append(name)
             
-    embed = discord.Embed(title="Attendance Report", color=discord.Color.blue())
+    # Philippines Time (UTC+8)
+    ph_tz = datetime.timezone(datetime.timedelta(hours=8))
+    now_ph = datetime.datetime.now(ph_tz)
+
+    embed = discord.Embed(title=f"Attendance Report - {now_ph.strftime('%B %d, %Y')}", color=discord.Color.blue())
     embed.add_field(name=f"✅ Present ({len(present_list)})", value="\n".join(present_list) if present_list else "None", inline=False)
     embed.add_field(name=f"❌ Absent ({len(absent_list)})", value="\n".join(absent_list) if absent_list else "None", inline=False)
     embed.add_field(name=f"⚠️ Excused ({len(excused_list)})", value="\n".join(excused_list) if excused_list else "None", inline=False)
+    embed.set_footer(text=f"Generated at {now_ph.strftime('%I:%M %p')} (PHT)")
     
     return embed
 
