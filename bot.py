@@ -631,6 +631,37 @@ async def reset_permit_role_users(ctx):
             
     await ctx.send(f"✅ Reset complete! Removed {role.mention} from {count} users. They will need to be re-assigned the role to say 'present'.")
 
+@bot.command(name='reset')
+@commands.has_permissions(manage_roles=True)
+async def reset_specific_role(ctx, role: discord.Role):
+    """
+    Removes the specified role from ALL users who have it.
+    Usage: !reset @Role
+    """
+    # Get users with the role
+    users_with_role = role.members
+    
+    if not users_with_role:
+        await ctx.send(f"No users currently have the {role.mention} role.")
+        return
+        
+    await ctx.send(f"Removing {role.mention} from {len(users_with_role)} users... This may take a moment.")
+    
+    count = 0
+    for member in users_with_role:
+        try:
+            await member.remove_roles(role)
+            count += 1
+            # Add a small delay to avoid rate limits if many users
+            if count % 5 == 0:
+                await asyncio.sleep(1) 
+        except discord.Forbidden:
+            logger.warning(f"Failed to remove role {role.name} from {member.name} (Missing Permissions)")
+        except Exception as e:
+            logger.error(f"Error removing role {role.name} from {member.id}: {e}")
+            
+    await ctx.send(f"✅ Reset complete! Removed {role.mention} from {count} users.")
+
 @bot.command(name='present')
 async def mark_present(ctx, member: discord.Member = None):
     """
