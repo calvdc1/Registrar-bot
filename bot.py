@@ -1220,7 +1220,7 @@ async def on_message(message):
                         
                         # DM the user
                         try:
-                            await message.author.send("attendance check comeback after 12hours")
+                            await message.author.send("Your attendance has been checked. You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.")
                         except discord.Forbidden:
                             logger.warning(f"Could not DM user {message.author.name} (Closed DMs)")
 
