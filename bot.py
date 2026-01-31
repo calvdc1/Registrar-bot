@@ -587,6 +587,50 @@ async def set_permit_role(ctx, role: discord.Role = None):
     
     save_attendance_data(data)
 
+@bot.command(name='resetpermitrole', aliases=['resetassignrole', 'resetallowedrole'])
+@commands.has_permissions(manage_roles=True)
+async def reset_permit_role_users(ctx):
+    """
+    Removes the 'Permitted Role' (assigned via !setpermitrole) from ALL users who have it.
+    This effectively resets who is allowed to say 'present'.
+    Usage: !resetpermitrole
+    """
+    data = load_attendance_data()
+    allowed_role_id = data.get('allowed_role_id')
+    
+    if not allowed_role_id:
+        await ctx.send("No 'Permitted Role' is currently configured. Use `!setpermitrole @Role` first.")
+        return
+        
+    role = ctx.guild.get_role(allowed_role_id)
+    if not role:
+        await ctx.send("The configured 'Permitted Role' no longer exists in this server.")
+        return
+        
+    # Get users with the role
+    users_with_role = role.members
+    
+    if not users_with_role:
+        await ctx.send(f"No users currently have the {role.mention} role.")
+        return
+        
+    await ctx.send(f"Removing {role.mention} from {len(users_with_role)} users... This may take a moment.")
+    
+    count = 0
+    for member in users_with_role:
+        try:
+            await member.remove_roles(role)
+            count += 1
+            # Add a small delay to avoid rate limits if many users
+            if count % 5 == 0:
+                await asyncio.sleep(1) 
+        except discord.Forbidden:
+            logger.warning(f"Failed to remove permitted role from {member.name} (Missing Permissions)")
+        except Exception as e:
+            logger.error(f"Error removing permitted role from {member.id}: {e}")
+            
+    await ctx.send(f"✅ Reset complete! Removed {role.mention} from {count} users. They will need to be re-assigned the role to say 'present'.")
+
 @bot.command(name='present')
 async def mark_present(ctx, member: discord.Member = None):
     """
