@@ -751,9 +751,44 @@ def create_attendance_embed(guild):
     now_ph = datetime.datetime.now(ph_tz)
 
     embed = discord.Embed(title=f"Attendance Report - {now_ph.strftime('%B %d, %Y')}", color=discord.Color.blue())
-    embed.add_field(name=f"✅ Present ({len(present_list)})", value="\n".join(present_list) if present_list else "None", inline=False)
-    embed.add_field(name=f"❌ Absent ({len(absent_list)})", value="\n".join(absent_list) if absent_list else "None", inline=False)
-    embed.add_field(name=f"⚠️ Excused ({len(excused_list)})", value="\n".join(excused_list) if excused_list else "None", inline=False)
+    
+    # Format lists with reasons where applicable
+    def format_list(names, records_dict):
+        formatted = []
+        for name in names:
+            # Find the user ID for this name (reverse lookup is a bit inefficient but safe for small lists)
+            # Better to pass tuples (name, uid) to lists
+            pass
+        return names
+
+    # Re-building lists to include UIDs for reason lookup
+    present_entries = []
+    absent_entries = []
+    excused_entries = []
+
+    for uid, info in records.items():
+        if isinstance(info, str):
+            info = {"status": "present", "timestamp": info}
+            
+        status = info.get('status', 'present')
+        reason = info.get('reason')
+        member = guild.get_member(int(uid))
+        name = member.display_name if member else f"Unknown User ({uid})"
+        
+        entry = name
+        if reason:
+            entry += f" ({reason})"
+
+        if status == 'present':
+            present_entries.append(entry)
+        elif status == 'absent':
+            absent_entries.append(entry)
+        elif status == 'excused':
+            excused_entries.append(entry)
+
+    embed.add_field(name=f"✅ Present ({len(present_entries)})", value="\n".join(present_entries) if present_entries else "None", inline=False)
+    embed.add_field(name=f"❌ Absent ({len(absent_entries)})", value="\n".join(absent_entries) if absent_entries else "None", inline=False)
+    embed.add_field(name=f"⚠️ Excused ({len(excused_entries)})", value="\n".join(excused_entries) if excused_entries else "None", inline=False)
     embed.set_footer(text=f"Generated at {now_ph.strftime('%I:%M %p')} (PHT)")
     
     return embed
@@ -871,6 +906,7 @@ async def check_attendance_expiry():
 
     now = datetime.datetime.now()
     users_to_remove = []
+    users_to_update = {} # New: for state transitions (present -> absent)
     
     # Iterate over guilds
     for guild in bot.guilds:
@@ -898,51 +934,73 @@ async def check_attendance_expiry():
                     user_id = int(user_id_str)
                     member = guild.get_member(user_id)
                     
+                    # 1. Remove current role
                     if member and role_id:
                         role = guild.get_role(role_id)
                         if role and role in member.roles:
                             try:
                                 await member.remove_roles(role)
                                 logger.info(f"Removed {status} role from {member.name} (expired)")
-                                
-                                # Notification Logic
-                                channel = None
-                                if channel_id:
-                                    channel = guild.get_channel(channel_id)
-                                
-                                # Fallback channel if specific channel is gone or not recorded
-                                if not channel and data.get('welcome_channel_id'):
-                                    channel = guild.get_channel(data.get('welcome_channel_id'))
-                                    
-                                if channel:
-                                    msg_content = f"{member.mention}, your attendance session has expired (12 hours)."
-                                    
-                                    # Ping Notification Role if set
-                                    if ping_role_id:
-                                        ping_role = guild.get_role(ping_role_id)
-                                        if ping_role:
-                                            msg_content = f"{ping_role.mention} " + msg_content
-                                            
-                                    msg_content += f"\nYou are now allowed to say **present** again."
-                                    
-                                    await channel.send(msg_content)
-                                    
                             except discord.Forbidden:
                                 logger.warning(f"Failed to remove role from {member.name}: Missing Permissions")
                     
-                    # Mark for removal from records
-                    users_to_remove.append(user_id_str)
-                    
+                    # 2. Determine Channel
+                    channel = None
+                    if channel_id:
+                        channel = guild.get_channel(channel_id)
+                    if not channel and data.get('welcome_channel_id'):
+                        channel = guild.get_channel(data.get('welcome_channel_id'))
+
+                    # 3. Handle Transitions
+                    if status == 'present':
+                        # Transition to ABSENT
+                        absent_role_id = data.get('absent_role_id')
+                        if absent_role_id:
+                            absent_role = guild.get_role(absent_role_id)
+                            if absent_role and member:
+                                try:
+                                    await member.add_roles(absent_role)
+                                except: pass
+                        
+                        # Schedule update to 'absent'
+                        users_to_update[user_id_str] = {
+                            "status": "absent",
+                            "timestamp": now.isoformat(), # Reset timer for absent status
+                            "channel_id": channel_id
+                        }
+
+                        # Notify
+                        if channel:
+                            msg_content = f"{member.mention}, your attendance session has expired (12 hours)."
+                            if ping_role_id:
+                                ping_role = guild.get_role(ping_role_id)
+                                if ping_role:
+                                    msg_content = f"{ping_role.mention} " + msg_content
+                            msg_content += f"\nYou have been marked as **Absent**. You are now allowed to say **present** again."
+                            await channel.send(msg_content)
+
+                    else:
+                        # For absent/excused, just remove the record
+                        users_to_remove.append(user_id_str)
+                                    
             except (ValueError, TypeError) as e:
                 logger.error(f"Error parsing timestamp for user {user_id_str}: {e}")
                 users_to_remove.append(user_id_str)
 
+    # Apply Updates
+    if users_to_update:
+        for uid, new_record in users_to_update.items():
+            data['records'][uid] = new_record
+            
+    # Apply Removals (only if not updated)
     if users_to_remove:
         # Remove duplicates
         users_to_remove = list(set(users_to_remove))
         for uid in users_to_remove:
-            if uid in data['records']:
+            if uid in data['records'] and uid not in users_to_update:
                 del data['records'][uid]
+                
+    if users_to_update or users_to_remove:
         save_attendance_data(data)
 
 @bot.event
@@ -1104,8 +1162,10 @@ async def on_message(message):
     # Process commands first (important!)
     await bot.process_commands(message)
 
+    msg_content = message.content.strip().lower()
+
     # Attendance check logic
-    if message.content.strip().lower() == "present":
+    if msg_content == "present":
         data = load_attendance_data()
         
         # Check permissions
@@ -1113,8 +1173,7 @@ async def on_message(message):
         if allowed_role_id:
             allowed_role = message.guild.get_role(allowed_role_id)
             if allowed_role and allowed_role not in message.author.roles:
-                # Silently ignore or maybe react with ❌? 
-                # Better to ignore to prevent spam if they don't have perms.
+                # Silently ignore to prevent spam if they don't have perms.
                 return
 
         attendance_role_id = data.get('attendance_role_id')
@@ -1130,9 +1189,6 @@ async def on_message(message):
                 # Check if already marked today (prevent spamming present)
                 # We check if they HAVE the role already as a proxy for "already present"
                 if role in message.author.roles:
-                     # Check if it was marked today to give specific feedback, 
-                     # but mainly we just don't do anything if they have the role.
-                     # Or we can just remind them.
                      await message.channel.send(f"{message.author.mention}, you have already marked your attendance!", delete_after=5)
                 else:
                     # Give role
@@ -1155,23 +1211,36 @@ async def on_message(message):
                             data['records'] = {}
                         data['records'][user_id] = {
                             "status": "present",
-                            "timestamp": now.isoformat()
+                            "timestamp": now.isoformat(),
+                            "channel_id": message.channel.id
                         }
                         save_attendance_data(data)
                         
                         await message.channel.send(f"Attendance marked for {message.author.mention}! You have been given the {role.name} role.", delete_after=10)
                         
+                        # DM the user
+                        try:
+                            await message.author.send("attendance check comeback after 12hours")
+                        except discord.Forbidden:
+                            logger.warning(f"Could not DM user {message.author.name} (Closed DMs)")
+
                         # Automatically show the attendance report
                         embed = create_attendance_embed(message.guild)
                         await message.channel.send(embed=embed)
                     except discord.Forbidden:
                         await message.channel.send("I tried to give you the role, but I don't have permission! Please check my role hierarchy.")
 
-    elif message.content.strip().lower() == "excuse":
+    elif msg_content.startswith("excuse"):
         data = load_attendance_data()
         attendance_role_id = data.get('attendance_role_id')
         absent_role_id = data.get('absent_role_id')
         excused_role_id = data.get('excused_role_id')
+        
+        # Parse reason
+        # "excuse because i am sick" -> reason: "because i am sick"
+        reason = message.content[6:].strip()
+        if not reason:
+            reason = "No reason provided"
 
         if excused_role_id:
             role = message.guild.get_role(excused_role_id)
@@ -1203,11 +1272,13 @@ async def on_message(message):
                             data['records'] = {}
                         data['records'][user_id] = {
                             "status": "excused",
-                            "timestamp": now.isoformat()
+                            "timestamp": now.isoformat(),
+                            "channel_id": message.channel.id,
+                            "reason": reason
                         }
                         save_attendance_data(data)
                         
-                        await message.channel.send(f"Excused status marked for {message.author.mention}! You have been given the {role.name} role.", delete_after=10)
+                        await message.channel.send(f"Excused status marked for {message.author.mention}! Reason: {reason}", delete_after=10)
                         
                         # Automatically show the attendance report
                         embed = create_attendance_embed(message.guild)
