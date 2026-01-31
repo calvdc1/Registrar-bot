@@ -284,7 +284,7 @@ def load_settings():
         "auto_nick_on_join": False,
         "enforce_suffix": False,
         "remove_suffix_on_role_loss": False,
-        "attendance_expiry_hours": 24,
+        "attendance_expiry_hours": 12,
         "allow_self_marking": True,
         "require_admin_excuse": True,
         "suffix_format": " [𝙼𝚂𝚄𝚊𝚗]"
@@ -890,10 +890,11 @@ async def assign_role_error(ctx, error):
 
 @tasks.loop(minutes=1)
 async def check_attendance_expiry():
-    data = load_attendance_data()
-    settings = data.get("settings", {})
-    expiry_hours = settings.get("attendance_expiry_hours", 24) # Default to 24 hours now
+    # Use load_settings to get defaults correctly (default expiry is 12h)
+    settings = load_settings()
+    expiry_hours = settings.get("attendance_expiry_hours", 12)
     
+    data = load_attendance_data()
     records = data.get('records', {})
     
     # Get all role IDs
