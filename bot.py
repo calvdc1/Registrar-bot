@@ -710,6 +710,56 @@ async def remove_present(ctx, member: discord.Member):
                 
     await ctx.send(f"Reset attendance for {member.mention}. They can now say 'present' again.")
 
+@bot.command(name='restartattendance', aliases=['resetattendance'])
+@commands.has_permissions(manage_roles=True)
+async def restart_attendance(ctx):
+    """
+    Resets attendance for ALL users who are marked as present.
+    Removes the 'Present' role and clears their record, allowing them to check in again immediately.
+    Usage: !restartattendance
+    """
+    data = load_attendance_data()
+    records = data.get('records', {})
+    present_role_id = data.get('attendance_role_id')
+    
+    # Identify users to reset (only those marked as 'present')
+    users_to_reset = []
+    for uid, info in records.items():
+        # Handle migration/fallback
+        if isinstance(info, str):
+            info = {"status": "present"}
+        
+        if info.get('status', 'present') == 'present':
+            users_to_reset.append(uid)
+            
+    if not users_to_reset:
+        await ctx.send("No users are currently marked as present.")
+        return
+        
+    await ctx.send(f"Restarting attendance for {len(users_to_reset)} users... This may take a moment.")
+    
+    # Remove roles
+    if present_role_id:
+        role = ctx.guild.get_role(present_role_id)
+        if role:
+            for uid in users_to_reset:
+                member = ctx.guild.get_member(int(uid))
+                if member and role in member.roles:
+                    try:
+                        await member.remove_roles(role)
+                    except discord.Forbidden:
+                        logger.warning(f"Failed to remove present role from {member.name} (Missing Permissions)")
+                    except Exception as e:
+                        logger.error(f"Error removing role from {uid}: {e}")
+
+    # Clear records
+    for uid in users_to_reset:
+        if uid in data['records']:
+            del data['records'][uid]
+            
+    save_attendance_data(data)
+    await ctx.send(f"✅ Attendance restarted! {len(users_to_reset)} users have been reset and can say 'present' again.")
+
 @bot.command(name='attendance')
 async def view_attendance(ctx):
     """
