@@ -1,24 +1,25 @@
 # Auto-Nickname & Attendance Bot
 
-A Discord bot that automatically adds a stylized suffix `[𝙼𝚂𝚄𝚊𝚗]` to users' nicknames and manages staff attendance.
+A Discord bot that automatically adds a stylized suffix `[𝙼𝚂𝚄𝚊𝚗]` to users' nicknames and manages staff attendance with advanced tracking, time windows, and persistent reporting.
 
 ## Features
 
-### Auto-Nickname
+### 📝 Auto-Nickname
 - **Manual Control**: Users can set their own nickname with the suffix using commands.
 - **Suffix Removal**: Users can remove the suffix if desired.
-- **Commands**:
-  - `!nick <Name>`: Users can set their own nickname (suffix added automatically).
-  - `!nick remove`: Users can remove the suffix.
-  - `!setnick @User <Name>`: (Admin) Manually set a user's nickname with suffix.
+- **Enforcement**: Option to enforce suffix on all users or specific roles.
 
-### Attendance System
+### 📅 Attendance System
+- **Flexible Modes**: 
+  - **Duration Mode**: Attendance expires after 12/24/48 hours.
+  - **Window Mode**: Attendance is only allowed during specific hours (e.g., 8am - 5pm).
 - **Mark Present**: Users type `present` or use `!present` to mark themselves present.
 - **Access Control**: Restrict who can mark attendance using `!setpermitrole`.
-- **Mark Absent/Excused**: Admins can mark users as absent or excused.
+- **Mark Absent/Excused**: Admins can mark users as absent or excused with reasons.
 - **Role Management**: Automatically assigns roles for Present, Absent, and Excused statuses.
-- **12-Hour Expiry**: Attendance roles and records are automatically cleared after 12 hours.
-- **View Lists**: View a report of who is Present, Absent, and Excused.
+- **Persistent Reports**: Live-updating attendance report in a designated channel.
+- **Auto-Absence**: Automatically marks users as absent if they miss the time window (Window Mode).
+- **Persistent Storage**: All data is saved to a database, preventing data loss on restarts.
 
 ## Setup
 
@@ -32,51 +33,85 @@ A Discord bot that automatically adds a stylized suffix `[𝙼𝚂𝚄𝚊𝚗]`
    ```
    DISCORD_TOKEN=your_token_here
    ```
+   *(Optional)* Set `DB_FILE` to specify database location (default: `attendance.db`).
 
 3. **Run the Bot**:
    ```bash
    python bot.py
    ```
 
-## Attendance Configuration
+## Quick Start Configuration
 
-First, set up the roles you want to use:
-1. **Present Role**: `!assignrole @PresentRole`
-2. **Absent Role**: `!absentrole @AbsentRole`
-3. **Excused Role**: `!excuserole @ExcusedRole`
-4. **(Optional) Restrict Access**: `!setpermitrole @Role` (Only allow this role to mark present)
+1. **Set up Roles**:
+   ```
+   !assignrole @PresentRole
+   !absentrole @AbsentRole
+   !excuserole @ExcusedRole
+   ```
+2. **Set Attendance Channel**:
+   ```
+   !assignchannel #attendance-reports
+   ```
+3. **Configure Time Window (Optional)**:
+   ```
+   !settime 8:00am - 5:00pm
+   ```
 
-## Interactive Configuration (New!)
-Use the `!settings` command to open an interactive dashboard where you can configure:
-- **System**: Debug mode, etc.
-- **Auto-Nickname**: Suffix format, auto-add behavior, enforcement.
-- **Attendance**: Expiry time (12h/24h/48h), self-marking permission, admin-only excuse.
-- **Presence**: Set the bot's "Playing" or "Watching" status.
-
-## Persistent Attendance UI
-You can create a permanent "Check-In" message with buttons using:
-- `!setup_attendance`: Posts a message with "Mark Present" and "Excused" buttons.
-
-## Logging
-The bot automatically logs important events and errors to both the console and a file named `bot.log`. 
-- **Console**: Useful for real-time monitoring.
-- **bot.log**: Keeps a persistent history of events (ignored by git).
+## Interactive Dashboard
+Use `!settings` to open the interactive configuration panel. You can toggle:
+- Debug Mode
+- Auto-Nickname Rules (Auto-add, Enforce)
+- Attendance Settings (Self-marking, Admin-only excuse)
+- Bot Presence (Status text)
 
 ## Commands Reference
 
+### 👤 User Commands
+| Command | Description |
+| :--- | :--- |
+| `!present` | Mark yourself as present. |
+| `!nick <Name>` | Change your nickname (suffix added automatically). |
+| `!nick remove` | Remove the suffix from your name. |
+| `!attendance` | View the current attendance list/report. |
+| `!ping` | Check if the bot is responsive. |
+
+### 🛠️ Management Commands (Staff/Admin)
 | Command | Permission | Description |
 | :--- | :--- | :--- |
-| `!settings` | Administrator | Open the configuration dashboard. |
-| `!setup_attendance` | Administrator | Create a message with attendance buttons. |
-| `!nick <Name>` | Everyone | Change your own nickname. |
-| `!nick remove` | Everyone | Remove the suffix from your name. |
-| `!setnick @User <Name>` | Manage Nicknames | Change another user's nickname. |
-| `!present` | Everyone (or Restricted) | Mark yourself as present. |
-| `!assignrole @Role` | Manage Roles | Set the role for "Present" status. |
-| `!absentrole @Role` | Manage Roles | Set the role for "Absent" status. |
-| `!excuserole @Role` | Manage Roles | Set the role for "Excused" status. |
-| `!setpermitrole @Role` | Manage Roles | Restrict `!present` to a specific role. |
+| `!present @User` | Manage Roles | Manually mark another user as present. |
 | `!absent @User` | Manage Roles | Mark a user as Absent. |
-| `!excuse @User` | Manage Roles | Mark a user as Excused. |
-| `!removepresent @User` | Manage Roles | Reset a user's status so they can mark again. |
-| `!attendance` | Everyone | View the current attendance list. |
+| `!excuse @User <Reason>` | Manage Roles | Mark a user as Excused with a reason. |
+| `!removepresent @User` | Manage Roles | Remove a user's status so they can mark again. |
+| `!setnick @User <Name>` | Manage Nicknames | Change another user's nickname. |
+
+### ⚙️ Configuration Commands (Admin)
+| Command | Description |
+| :--- | :--- |
+| `!settings` | Open the interactive settings dashboard. |
+| `!settime <Start> - <End>` | Set attendance window (e.g., `!settime 8am - 5pm`). |
+| `!assignchannel #channel` | Set the channel for live attendance reports. |
+| `!setup_attendance` | Create a persistent "Check-In" message with buttons. |
+
+### 🛡️ Role Setup Commands (Admin)
+| Command | Description |
+| :--- | :--- |
+| `!assignrole @Role` | Set the role given for "Present" status. |
+| `!absentrole @Role` | Set the role given for "Absent" status. |
+| `!excuserole @Role` | Set the role given for "Excused" status. |
+| `!setpermitrole @Role` | Restrict `!present` command to a specific role. |
+| `!resetpermitrole` | Remove the permitted role from all users who have it. |
+| `!reset @Role` | Remove a specific role from all users who have it. |
+
+### ⚠️ System Commands (Admin)
+| Command | Description |
+| :--- | :--- |
+| `!restartattendance` | **Full Reset**: Clears all records, removes roles, and resets settings. |
+
+## Deployment (Render)
+
+This bot is configured for deployment on Render.
+See [DEPLOY.md](DEPLOY.md) for detailed instructions.
+
+**Key Requirements:**
+- Use a **Persistent Disk** mounted at `/data` to save the database (`attendance.db`).
+- Set `DB_FILE` environment variable to `/data/attendance.db`.
