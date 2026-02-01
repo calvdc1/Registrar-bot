@@ -1669,7 +1669,15 @@ class AttendanceView(discord.ui.View):
         # Send DM if present
         if status == 'present':
              try:
-                 await member.send("Your attendance has been checked. You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.")
+                 embed = discord.Embed(
+                    title="✅ Attendance Confirmed",
+                    description="Your attendance has been checked successfully.",
+                    color=discord.Color.green()
+                 )
+                 embed.add_field(name="Status", value="Present", inline=True)
+                 embed.add_field(name="Note", value="You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.", inline=False)
+                 embed.set_footer(text=f"Server: {interaction.guild.name}")
+                 await member.send(embed=embed)
              except:
                  pass
 
@@ -1818,7 +1826,15 @@ async def on_message(message):
                         
                         # DM the user
                         try:
-                            await message.author.send("Your attendance has been checked. You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.")
+                            embed = discord.Embed(
+                                title="✅ Attendance Confirmed",
+                                description="Your attendance has been checked successfully.",
+                                color=discord.Color.green()
+                            )
+                            embed.add_field(name="Status", value="Present", inline=True)
+                            embed.add_field(name="Note", value="You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.", inline=False)
+                            embed.set_footer(text=f"Server: {message.guild.name}")
+                            await message.author.send(embed=embed)
                         except discord.Forbidden:
                             logger.warning(f"Could not DM user {message.author.name} (Closed DMs)")
                         except Exception:
