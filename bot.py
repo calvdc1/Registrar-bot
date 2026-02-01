@@ -1023,10 +1023,10 @@ def create_attendance_embed(guild):
         f"**🗓️ Date:** `{now_ph.strftime('%B %d, %Y')}`\n"
         f"**⌚ Time:** `{now_ph.strftime('%I:%M %p')}`\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "**📝 Legend**\n"
-        "✅ **Present** • Checked in successfully.\n"
-        "⚠️ **Excused** • Has a valid reason.\n"
-        "❌ **Absent** • Did not check in."
+        "**Legend**\n"
+        "**Present** • Checked in successfully.\n"
+        "**Excused** • Has a valid reason.\n"
+        "**Absent** • Did not check in."
     )
     
     # Helper to get name
