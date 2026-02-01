@@ -7,11 +7,12 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from keep_alive import keep_alive
+import database # Import database module
 
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-ATTENDANCE_FILE = "attendance_data.json"
+# DATA_DIR = "data" # No longer needed for main storage
 
 # Configure logging
 logging.basicConfig(
@@ -29,7 +30,7 @@ intents = discord.Intents.default()
 intents.members = True  # Required to detect member joins and updates
 intents.message_content = True # Required for reading commands
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents, case_insensitive=True)
 
 # Configuration
 SUFFIX = " [𝙼𝚂𝚄𝚊𝚗]"
@@ -51,7 +52,7 @@ def can_manage_nick(ctx, member):
 
 async def apply_nickname(member):
     """Helper function to apply the nickname suffix."""
-    settings = load_settings()
+    settings = load_settings(member.guild.id)
     suffix = settings.get("suffix_format", SUFFIX)
     
     try:
@@ -80,7 +81,7 @@ async def apply_nickname(member):
 
 async def remove_nickname(member):
     """Helper function to remove the nickname suffix."""
-    settings = load_settings()
+    settings = load_settings(member.guild.id)
     suffix = settings.get("suffix_format", SUFFIX)
     
     try:
@@ -107,13 +108,13 @@ async def remove_nickname(member):
 @bot.event
 async def on_member_join(member):
     logger.info(f"Member joined: {member.name}")
-    settings = load_settings()
+    settings = load_settings(member.guild.id)
     if settings.get("auto_nick_on_join", False):
         await apply_nickname(member)
 
 @bot.event
 async def on_member_update(before, after):
-    settings = load_settings()
+    settings = load_settings(after.guild.id)
     
     # Enforce Suffix
     if settings.get("enforce_suffix", False):
@@ -225,7 +226,7 @@ async def nick(ctx, *, name: str = None):
                 return
 
             # Check if the suffix is already in the provided name, if not, append it
-            settings = load_settings()
+            settings = load_settings(ctx.guild.id)
             suffix = settings.get("suffix_format", SUFFIX)
             if not name.endswith(suffix):
                  # Truncate if necessary
@@ -253,32 +254,194 @@ async def nick_error(ctx, error):
     # MissingRequiredArgument is now handled inside the command function
     pass
 
+# --- Helper Functions ---
+
+def parse_time_input(time_str):
+    """Parses various time string formats into HH:MM (24h)."""
+    time_str = time_str.lower().replace(" ", "").replace(".", "")
+    
+    # Formats to try
+    # %H:%M (14:30), %I:%M%p (2:30pm), %I%p (2pm), %H (14)
+    formats = [
+        "%H:%M", 
+        "%I:%M%p", 
+        "%I%p", 
+        "%H"
+    ]
+    
+    for fmt in formats:
+        try:
+            dt = datetime.datetime.strptime(time_str, fmt)
+            return dt.strftime("%H:%M")
+        except ValueError:
+            continue
+            
+    return None
+
+@bot.command(name='ping')
+async def ping(ctx):
+    """Checks if the bot is alive."""
+    await ctx.send(f"Pong! 🏓 Latency: {round(bot.latency * 1000)}ms")
+
+@bot.command(name='settime')
+@commands.has_permissions(administrator=True)
+async def set_attendance_time(ctx, *, time_input: str = None):
+    """
+    Sets the attendance window time.
+    Usage: !settime 6am to 11:59pm
+    Usage: !settime 08:00 - 17:00
+    """
+    logger.info(f"Command execution started: settime with input '{time_input}'")
+    
+    # Normalize input
+    if not time_input:
+         await ctx.send("❌ Please provide a time range. Usage: `!settime 6am to 11:59pm`")
+         return
+         
+    try:
+        raw_input = time_input.lower()
+        logger.info(f"Processing time input: '{raw_input}'")
+        
+        # Try different separators
+        parts = []
+        if " to " in raw_input:
+            parts = raw_input.split(" to ")
+        elif "-" in raw_input:
+            parts = raw_input.split("-")
+        else:
+            # Fallback: Split by space
+            temp_parts = raw_input.split()
+            if len(temp_parts) == 2:
+                parts = temp_parts
+        
+        if len(parts) < 2:
+            logger.warning(f"Failed to split time input: {raw_input}")
+            await ctx.send("Could not identify start and end time. Please separate them with `to` or `-`. \nExample: `!settime 6am to 11pm`")
+            return
+    
+        start_str = parts[0].strip()
+        end_str = parts[1].strip()
+    
+        # Validate
+        s_parsed = parse_time_input(start_str)
+        e_parsed = parse_time_input(end_str)
+        
+        if not s_parsed or not e_parsed:
+            logger.warning(f"Failed to parse times: {start_str} -> {s_parsed}, {end_str} -> {e_parsed}")
+            await ctx.send(f"Invalid time format (`{start_str}` or `{end_str}`). Please use formats like `6am`, `11:59pm`, `08:00`.")
+            return
+            
+        settings = load_settings(ctx.guild.id)
+        settings['attendance_mode'] = 'window'
+        settings['window_start_time'] = s_parsed
+        settings['window_end_time'] = e_parsed
+        
+        # Reset the last processed date so we don't accidentally skip today if re-setting
+        settings['last_processed_date'] = None
+        
+        save_settings(ctx.guild.id, settings)
+        
+        logger.info(f"Successfully saved settings: {s_parsed} - {e_parsed}")
+        await ctx.send(f"✅ Attendance time set to **{s_parsed} - {e_parsed}**. Mode switched to 'Window'.")
+        
+        # Check if allowed_role is set for auto-absence
+        data = load_attendance_data(ctx.guild.id)
+        if not data.get('allowed_role_id'):
+            await ctx.send("⚠️ **Note:** You haven't set a 'Permitted Role' (the role required to attend). \n"
+                           "Bot cannot determine who is 'missing' without it. \n"
+                           "Please run `!setpermitrole @Role` (e.g., @Student) so the bot knows who should be marked absent if they don't show up.")
+        
+        await ctx.send(f"Bot will now automatically mark absences and reset attendance after {e_parsed}.")
+        
+    except Exception as e:
+        logger.error(f"Critical error in set_attendance_time: {e}", exc_info=True)
+        await ctx.send(f"❌ An internal error occurred: {e}")
+
 # --- Attendance Logic ---
 
-def load_attendance_data():
-    try:
-        with open(ATTENDANCE_FILE, 'r') as f:
-            data = json.load(f)
-            # Migration check: if 'records' contains strings (old format), convert them
-            records = data.get('records', {})
-            new_records = {}
-            for uid, val in records.items():
-                if isinstance(val, str):
-                    # Old format: "timestamp" -> New format: {"status": "present", "timestamp": "timestamp"}
-                    new_records[uid] = {"status": "present", "timestamp": val}
-                else:
-                    new_records[uid] = val
-            data['records'] = new_records
-            return data
-            
-    except FileNotFoundError:
-        return {"attendance_role_id": None, "absent_role_id": None, "excused_role_id": None, "welcome_channel_id": None, "records": {}}
-    except json.JSONDecodeError:
-        return {"attendance_role_id": None, "absent_role_id": None, "excused_role_id": None, "welcome_channel_id": None, "records": {}, "settings": {}}
+def load_attendance_data(guild_id):
+    """Loads attendance data for a specific guild from the database."""
+    config = database.get_guild_config(guild_id)
+    if not config:
+        # Default structure for new guilds
+        return {
+            "attendance_role_id": None, 
+            "absent_role_id": None, 
+            "excused_role_id": None, 
+            "welcome_channel_id": None, 
+            "report_channel_id": None,
+            "last_report_message_id": None,
+            "last_report_channel_id": None,
+            "records": {}, 
+            "settings": {}
+        }
+    
+    # Reconstruct settings dict
+    settings = {
+        "attendance_mode": config.get('attendance_mode'),
+        "attendance_expiry_hours": config.get('attendance_expiry_hours'),
+        "window_start_time": config.get('window_start_time'),
+        "window_end_time": config.get('window_end_time'),
+        "last_processed_date": config.get('last_processed_date'),
+        "last_opened_date": config.get('last_opened_date'),
+        "allow_self_marking": bool(config.get('allow_self_marking')),
+        "require_admin_excuse": bool(config.get('require_admin_excuse')),
+        "auto_nick_on_join": bool(config.get('auto_nick_on_join')),
+        "enforce_suffix": bool(config.get('enforce_suffix')),
+        "remove_suffix_on_role_loss": bool(config.get('remove_suffix_on_role_loss')),
+        "suffix_format": config.get('suffix_format')
+    }
+    
+    records = database.get_attendance_records(guild_id)
+    
+    return {
+        "attendance_role_id": config.get('attendance_role_id'),
+        "absent_role_id": config.get('absent_role_id'),
+        "excused_role_id": config.get('excused_role_id'),
+        "welcome_channel_id": config.get('welcome_channel_id'),
+        "report_channel_id": config.get('report_channel_id'),
+        "last_report_message_id": config.get('last_report_message_id'),
+        "last_report_channel_id": config.get('last_report_channel_id'),
+        "records": records,
+        "settings": settings
+    }
 
-def load_settings():
-    """Helper to get settings with defaults"""
-    data = load_attendance_data()
+def save_attendance_data(guild_id, guild_data):
+    """Saves attendance data for a specific guild to the database."""
+    settings = guild_data.get('settings', {})
+    
+    # Flatten for DB update
+    config_update = {
+        "attendance_role_id": guild_data.get('attendance_role_id'),
+        "absent_role_id": guild_data.get('absent_role_id'),
+        "excused_role_id": guild_data.get('excused_role_id'),
+        "welcome_channel_id": guild_data.get('welcome_channel_id'),
+        "report_channel_id": guild_data.get('report_channel_id'),
+        "last_report_message_id": guild_data.get('last_report_message_id'),
+        "last_report_channel_id": guild_data.get('last_report_channel_id'),
+        
+        # Settings
+        "attendance_mode": settings.get('attendance_mode'),
+        "attendance_expiry_hours": settings.get('attendance_expiry_hours'),
+        "window_start_time": settings.get('window_start_time'),
+        "window_end_time": settings.get('window_end_time'),
+        "last_processed_date": settings.get('last_processed_date'),
+        "last_opened_date": settings.get('last_opened_date'),
+        "allow_self_marking": settings.get('allow_self_marking'),
+        "require_admin_excuse": settings.get('require_admin_excuse'),
+        "auto_nick_on_join": settings.get('auto_nick_on_join'),
+        "enforce_suffix": settings.get('enforce_suffix'),
+        "remove_suffix_on_role_loss": settings.get('remove_suffix_on_role_loss'),
+        "suffix_format": settings.get('suffix_format')
+    }
+    
+    database.update_guild_config(guild_id, **config_update)
+    database.replace_all_records(guild_id, guild_data.get('records', {}))
+
+def load_settings(guild_id):
+    """Helper to get settings with defaults for a guild"""
+    config = database.get_guild_config(guild_id)
+    
     defaults = {
         "debug_mode": False,
         "auto_nick_on_join": False,
@@ -287,23 +450,55 @@ def load_settings():
         "attendance_expiry_hours": 12,
         "allow_self_marking": True,
         "require_admin_excuse": True,
-        "suffix_format": " [𝙼𝚂𝚄𝚊𝚗]"
+        "suffix_format": " [𝙼𝚂𝚄𝚊𝚗]",
+        "attendance_mode": "duration", 
+        "window_start_time": "00:00",
+        "window_end_time": "23:59",
+        "last_processed_date": None,
+        "last_opened_date": None
     }
-    settings = data.get("settings", {})
+    
+    if not config:
+        return defaults
+        
+    # Map DB fields to settings dict
+    settings = {
+        "auto_nick_on_join": bool(config.get('auto_nick_on_join', False)),
+        "enforce_suffix": bool(config.get('enforce_suffix', False)),
+        "remove_suffix_on_role_loss": bool(config.get('remove_suffix_on_role_loss', False)),
+        "attendance_expiry_hours": config.get('attendance_expiry_hours', 12),
+        "allow_self_marking": bool(config.get('allow_self_marking', True)),
+        "require_admin_excuse": bool(config.get('require_admin_excuse', True)),
+        "suffix_format": config.get('suffix_format', " [𝙼𝚂𝚄𝚊𝚗]"),
+        "attendance_mode": config.get('attendance_mode', 'duration'),
+        "window_start_time": config.get('window_start_time', '00:00'),
+        "window_end_time": config.get('window_end_time', '23:59'),
+        "last_processed_date": config.get('last_processed_date'),
+        "last_opened_date": config.get('last_opened_date')
+    }
+    
     # Merge defaults
     for k, v in defaults.items():
-        if k not in settings:
+        if k not in settings or settings[k] is None:
             settings[k] = v
     return settings
 
-def save_settings(settings):
-    data = load_attendance_data()
-    data["settings"] = settings
-    save_attendance_data(data)
-
-def save_attendance_data(data):
-    with open(ATTENDANCE_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+def save_settings(guild_id, settings):
+    config_update = {
+        "attendance_mode": settings.get('attendance_mode'),
+        "attendance_expiry_hours": settings.get('attendance_expiry_hours'),
+        "window_start_time": settings.get('window_start_time'),
+        "window_end_time": settings.get('window_end_time'),
+        "last_processed_date": settings.get('last_processed_date'),
+        "last_opened_date": settings.get('last_opened_date'),
+        "allow_self_marking": settings.get('allow_self_marking'),
+        "require_admin_excuse": settings.get('require_admin_excuse'),
+        "auto_nick_on_join": settings.get('auto_nick_on_join'),
+        "enforce_suffix": settings.get('enforce_suffix'),
+        "remove_suffix_on_role_loss": settings.get('remove_suffix_on_role_loss'),
+        "suffix_format": settings.get('suffix_format')
+    }
+    database.update_guild_config(guild_id, **config_update)
 
 # --- Configuration Views ---
 
@@ -320,16 +515,16 @@ class SettingsSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         category = self.values[0]
-        settings = load_settings()
+        settings = load_settings(interaction.guild.id)
         
         if category == "System Settings":
-            view = SystemSettingsView(settings)
+            view = SystemSettingsView(interaction.guild.id, settings)
             embed = discord.Embed(title="System Settings", color=discord.Color.blue())
             embed.add_field(name="Debug Mode", value="Enabled" if settings['debug_mode'] else "Disabled")
             await interaction.response.edit_message(embed=embed, view=view)
             
         elif category == "Auto-Nickname":
-            view = AutoNickSettingsView(settings)
+            view = AutoNickSettingsView(interaction.guild.id, settings)
             embed = discord.Embed(title="Auto-Nickname Configuration", color=discord.Color.green())
             embed.add_field(name="Suffix Format", value=f"`{settings['suffix_format']}`", inline=False)
             embed.add_field(name="Auto-Add on Join", value=str(settings['auto_nick_on_join']))
@@ -338,9 +533,14 @@ class SettingsSelect(discord.ui.Select):
             await interaction.response.edit_message(embed=embed, view=view)
             
         elif category == "Attendance Settings":
-            view = AttendanceSettingsView(settings)
+            view = AttendanceSettingsView(interaction.guild.id, settings)
             embed = discord.Embed(title="Attendance Settings", color=discord.Color.orange())
-            embed.add_field(name="Auto-Expiry (Hours)", value=str(settings['attendance_expiry_hours']))
+            embed.add_field(name="Attendance Mode", value=settings['attendance_mode'].title())
+            if settings['attendance_mode'] == 'window':
+                 embed.add_field(name="Window", value=f"{settings['window_start_time']} - {settings['window_end_time']}")
+            else:
+                 embed.add_field(name="Auto-Expiry (Hours)", value=str(settings['attendance_expiry_hours']))
+            
             embed.add_field(name="Allow Self-Marking", value=str(settings['allow_self_marking']))
             embed.add_field(name="Require Admin for Excuse", value=str(settings['require_admin_excuse']))
             await interaction.response.edit_message(embed=embed, view=view)
@@ -367,12 +567,13 @@ class PresenceModal(discord.ui.Modal, title="Set Bot Presence"):
         await interaction.response.send_message(f"Presence updated to: {self.status_type.value} {self.status_text.value}", ephemeral=True)
 
 class BaseSettingsView(discord.ui.View):
-    def __init__(self, settings):
+    def __init__(self, guild_id, settings):
         super().__init__(timeout=180)
+        self.guild_id = guild_id
         self.settings = settings
 
     async def update_message(self, interaction, embed):
-        save_settings(self.settings)
+        save_settings(self.guild_id, self.settings)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Back to Main Menu", style=discord.ButtonStyle.secondary, row=4)
@@ -420,33 +621,78 @@ class AutoNickSettingsView(BaseSettingsView):
         embed.set_field_at(2, name="Enforce Suffix", value=str(self.settings['enforce_suffix']))
         embed.set_field_at(3, name="Remove on Role Loss", value=str(self.settings['remove_suffix_on_role_loss']))
 
+class TimeWindowModal(discord.ui.Modal, title="Set Time Window"):
+    start_time = discord.ui.TextInput(label="Start Time (HH:MM 24h)", placeholder="08:00", min_length=5, max_length=5)
+    end_time = discord.ui.TextInput(label="End Time (HH:MM 24h)", placeholder="17:00", min_length=5, max_length=5)
+
+    def __init__(self, view_instance):
+        super().__init__()
+        self.view_instance = view_instance
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Basic validation
+        try:
+            datetime.datetime.strptime(self.start_time.value, "%H:%M")
+            datetime.datetime.strptime(self.end_time.value, "%H:%M")
+        except ValueError:
+            await interaction.response.send_message("Invalid time format. Please use HH:MM (e.g., 09:00, 23:59).", ephemeral=True)
+            return
+
+        self.view_instance.settings['window_start_time'] = self.start_time.value
+        self.view_instance.settings['window_end_time'] = self.end_time.value
+        self.view_instance.update_embed(interaction.message.embeds[0])
+        await self.view_instance.update_message(interaction, interaction.message.embeds[0])
+
 class AttendanceSettingsView(BaseSettingsView):
-    @discord.ui.button(label="Toggle Self-Marking", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Toggle Mode (Duration/Window)", style=discord.ButtonStyle.primary, row=0)
+    async def toggle_mode(self, interaction: discord.Interaction, button: discord.ui.Button):
+        current = self.settings.get('attendance_mode', 'duration')
+        self.settings['attendance_mode'] = 'window' if current == 'duration' else 'duration'
+        self.update_embed(interaction.message.embeds[0])
+        await self.update_message(interaction, interaction.message.embeds[0])
+
+    @discord.ui.button(label="Set Time Window", style=discord.ButtonStyle.secondary, row=0)
+    async def set_window(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.settings.get('attendance_mode') != 'window':
+             await interaction.response.send_message("Enable 'Window' mode first.", ephemeral=True)
+             return
+        await interaction.response.send_modal(TimeWindowModal(self))
+
+    @discord.ui.button(label="Toggle Self-Marking", style=discord.ButtonStyle.primary, row=1)
     async def toggle_self_mark(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.settings['allow_self_marking'] = not self.settings['allow_self_marking']
         self.update_embed(interaction.message.embeds[0])
         await self.update_message(interaction, interaction.message.embeds[0])
 
-    @discord.ui.button(label="Toggle Admin Only Excuse", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Toggle Admin Only Excuse", style=discord.ButtonStyle.primary, row=1)
     async def toggle_admin_excuse(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.settings['require_admin_excuse'] = not self.settings['require_admin_excuse']
         self.update_embed(interaction.message.embeds[0])
         await self.update_message(interaction, interaction.message.embeds[0])
 
-    @discord.ui.select(placeholder="Select Expiry Time", options=[
+    @discord.ui.select(placeholder="Select Expiry Time (Duration Mode)", options=[
         discord.SelectOption(label="12 Hours", value="12"),
         discord.SelectOption(label="24 Hours", value="24"),
         discord.SelectOption(label="48 Hours", value="48")
-    ])
+    ], row=2)
     async def select_expiry(self, interaction: discord.Interaction, select: discord.ui.Select):
         self.settings['attendance_expiry_hours'] = int(select.values[0])
         self.update_embed(interaction.message.embeds[0])
         await self.update_message(interaction, interaction.message.embeds[0])
 
     def update_embed(self, embed):
-        embed.set_field_at(0, name="Auto-Expiry (Hours)", value=str(self.settings['attendance_expiry_hours']))
-        embed.set_field_at(1, name="Allow Self-Marking", value=str(self.settings['allow_self_marking']))
-        embed.set_field_at(2, name="Require Admin for Excuse", value=str(self.settings['require_admin_excuse']))
+        embed.clear_fields() # Rebuild fields
+        
+        mode = self.settings.get('attendance_mode', 'duration')
+        embed.add_field(name="Attendance Mode", value=mode.title(), inline=False)
+        
+        if mode == 'window':
+             embed.add_field(name="Window", value=f"{self.settings.get('window_start_time', '00:00')} - {self.settings.get('window_end_time', '23:59')}", inline=False)
+        else:
+             embed.add_field(name="Auto-Expiry (Hours)", value=str(self.settings['attendance_expiry_hours']), inline=False)
+
+        embed.add_field(name="Allow Self-Marking", value=str(self.settings['allow_self_marking']))
+        embed.add_field(name="Require Admin for Excuse", value=str(self.settings['require_admin_excuse']))
 
 class MainSettingsView(discord.ui.View):
     def __init__(self, bot_instance):
@@ -467,9 +713,9 @@ async def assign_attendance_role(ctx, role: discord.Role):
     Sets the role that users receive when they say 'present'.
     Usage: !presentrole @Role (or !assignrole @Role)
     """
-    data = load_attendance_data()
+    data = load_attendance_data(ctx.guild.id)
     data['attendance_role_id'] = role.id
-    save_attendance_data(data)
+    save_attendance_data(ctx.guild.id, data)
     await ctx.send(f"Attendance role has been set to {role.mention}. Users who say 'present' will now receive this role for 12 hours.")
 
 @bot.command(name='absentrole')
@@ -479,9 +725,9 @@ async def assign_absent_role(ctx, role: discord.Role):
     Sets the role that users receive when marked as absent.
     Usage: !absentrole @Role
     """
-    data = load_attendance_data()
+    data = load_attendance_data(ctx.guild.id)
     data['absent_role_id'] = role.id
-    save_attendance_data(data)
+    save_attendance_data(ctx.guild.id, data)
     await ctx.send(f"Absent role has been set to {role.mention}.")
 
 @bot.command(name='excuserole')
@@ -491,14 +737,14 @@ async def assign_excused_role(ctx, role: discord.Role):
     Sets the role that users receive when marked as excused.
     Usage: !excuserole @Role
     """
-    data = load_attendance_data()
+    data = load_attendance_data(ctx.guild.id)
     data['excused_role_id'] = role.id
-    save_attendance_data(data)
+    save_attendance_data(ctx.guild.id, data)
     await ctx.send(f"Excused role has been set to {role.mention}.")
 
 
 async def update_user_status(ctx, member, status, reason=None):
-    data = load_attendance_data()
+    data = load_attendance_data(ctx.guild.id)
     
     # Get all role IDs
     present_role_id = data.get('attendance_role_id')
@@ -567,7 +813,7 @@ async def update_user_status(ctx, member, status, reason=None):
         record["reason"] = reason
         
     data['records'][user_id] = record
-    save_attendance_data(data)
+    save_attendance_data(ctx.guild.id, data)
 
 @bot.command(name='setpermitrole', aliases=['allowrole'])
 @commands.has_permissions(manage_roles=True)
@@ -577,7 +823,7 @@ async def set_permit_role(ctx, role: discord.Role = None):
     Usage: !setpermitrole @Role
     Usage: !setpermitrole (to reset/allow everyone)
     """
-    data = load_attendance_data()
+    data = load_attendance_data(ctx.guild.id)
     if role:
         data['allowed_role_id'] = role.id
         await ctx.send(f"Permission Updated: Only users with the {role.mention} role can mark attendance.")
@@ -585,7 +831,7 @@ async def set_permit_role(ctx, role: discord.Role = None):
         data['allowed_role_id'] = None
         await ctx.send("Permission Updated: Everyone can now mark attendance.")
     
-    save_attendance_data(data)
+    save_attendance_data(ctx.guild.id, data)
 
 @bot.command(name='resetpermitrole', aliases=['resetassignrole', 'resetallowedrole'])
 @commands.has_permissions(manage_roles=True)
@@ -595,7 +841,7 @@ async def reset_permit_role_users(ctx):
     This effectively resets who is allowed to say 'present'.
     Usage: !resetpermitrole
     """
-    data = load_attendance_data()
+    data = load_attendance_data(ctx.guild.id)
     allowed_role_id = data.get('allowed_role_id')
     
     if not allowed_role_id:
@@ -662,6 +908,32 @@ async def reset_specific_role(ctx, role: discord.Role):
             
     await ctx.send(f"✅ Reset complete! Removed {role.mention} from {count} users.")
 
+def is_in_attendance_window(guild_id):
+    settings = load_settings(guild_id)
+    if settings.get('attendance_mode') != 'window':
+        return True, None
+    
+    start_str = settings.get('window_start_time', '00:00')
+    end_str = settings.get('window_end_time', '23:59')
+    
+    try:
+        t_start = datetime.datetime.strptime(start_str, "%H:%M").time()
+        t_end = datetime.datetime.strptime(end_str, "%H:%M").time()
+        now = datetime.datetime.now().time()
+        
+        in_window = False
+        if t_start <= t_end:
+            in_window = t_start <= now <= t_end
+        else:
+            in_window = now >= t_start or now <= t_end
+            
+        if not in_window:
+            return False, f"Attendance is only allowed between {start_str} and {end_str}."
+            
+        return True, None
+    except ValueError:
+        return True, None
+
 @bot.command(name='present')
 async def mark_present(ctx, member: discord.Member = None):
     """
@@ -674,12 +946,19 @@ async def mark_present(ctx, member: discord.Member = None):
 
     # Check for required role if marking self
     if member == ctx.author:
-        settings = load_settings()
+        settings = load_settings(ctx.guild.id)
+        
+        # Check Window
+        allowed, msg = is_in_attendance_window(ctx.guild.id)
+        if not allowed:
+             await ctx.send(msg)
+             return
+        
         if not settings.get('allow_self_marking', True):
             await ctx.send("Self-marking is currently disabled.")
             return
 
-        data = load_attendance_data()
+        data = load_attendance_data(ctx.guild.id)
         allowed_role_id = data.get('allowed_role_id')
         if allowed_role_id:
             allowed_role = ctx.guild.get_role(allowed_role_id)
@@ -708,7 +987,7 @@ async def mark_excuse(ctx, member: discord.Member, *, reason: str):
     Marks a user as excused with a reason.
     Usage: !excuse @User I was sick
     """
-    settings = load_settings()
+    settings = load_settings(ctx.guild.id)
     if settings.get('require_admin_excuse', True):
         if not ctx.author.guild_permissions.manage_roles:
             await ctx.send("You do not have permission to excuse users.")
@@ -722,62 +1001,54 @@ async def mark_excuse_error(ctx, error):
         await ctx.send("Usage: `!excuse @User <reason>` (e.g., `!excuse @John I was sick`)")
 
 def create_attendance_embed(guild):
-    data = load_attendance_data()
+    logger.info(f"Generating report for guild: {guild.name} ({guild.id})")
+    data = load_attendance_data(guild.id)
     records = data.get('records', {})
     
-    present_list = []
-    absent_list = []
-    excused_list = []
-    
-    # Filter for active records
-    for uid, info in records.items():
-        # Handle migration fallback just in case
-        if isinstance(info, str):
-            info = {"status": "present", "timestamp": info}
-            
-        status = info.get('status', 'present')
-        member = guild.get_member(int(uid))
-        name = member.display_name if member else f"Unknown User ({uid})"
-        
-        if status == 'present':
-            present_list.append(name)
-        elif status == 'absent':
-            absent_list.append(name)
-        elif status == 'excused':
-            excused_list.append(name)
-            
     # Philippines Time (UTC+8)
     ph_tz = datetime.timezone(datetime.timedelta(hours=8))
     now_ph = datetime.datetime.now(ph_tz)
 
-    embed = discord.Embed(title=f"Attendance Report - {now_ph.strftime('%B %d, %Y')}", color=discord.Color.blue())
+    embed = discord.Embed(title=f"📅 Attendance Report - {guild.name}", color=discord.Color.gold())
+    if guild.icon:
+        embed.set_author(name=guild.name, icon_url=guild.icon.url)
+        embed.set_thumbnail(url=guild.icon.url)
+    else:
+        embed.set_author(name=guild.name)
+        
+    embed.description = (
+        f"**🗓️ Date:** `{now_ph.strftime('%B %d, %Y')}`\n"
+        f"**⌚ Time:** `{now_ph.strftime('%I:%M %p')}`\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "**📝 Legend**\n"
+        "✅ **Present** • Checked in successfully.\n"
+        "⚠️ **Excused** • Has a valid reason.\n"
+        "❌ **Absent** • Did not check in."
+    )
     
-    # Format lists with reasons where applicable
-    def format_list(names, records_dict):
-        formatted = []
-        for name in names:
-            # Find the user ID for this name (reverse lookup is a bit inefficient but safe for small lists)
-            # Better to pass tuples (name, uid) to lists
-            pass
-        return names
+    # Helper to get name
+    def get_name(uid):
+        member = guild.get_member(int(uid))
+        return member.display_name if member else f"Unknown ({uid})"
 
-    # Re-building lists to include UIDs for reason lookup
+    # Sort records by name for cleaner display
+    sorted_records = sorted(records.items(), key=lambda x: get_name(x[0]).lower())
+
     present_entries = []
     absent_entries = []
     excused_entries = []
 
-    for uid, info in records.items():
+    for uid, info in sorted_records:
         if isinstance(info, str):
             info = {"status": "present", "timestamp": info}
             
         status = info.get('status', 'present')
         reason = info.get('reason')
-        member = guild.get_member(int(uid))
-        name = member.display_name if member else f"Unknown User ({uid})"
+        name = get_name(uid)
         
-        entry = name
+        entry = f"• {name}"
         if reason:
-            entry += f" ({reason})"
+            entry += f" (*{reason}*)"
 
         if status == 'present':
             present_entries.append(entry)
@@ -786,10 +1057,20 @@ def create_attendance_embed(guild):
         elif status == 'excused':
             excused_entries.append(entry)
 
-    embed.add_field(name=f"✅ Present ({len(present_entries)})", value="\n".join(present_entries) if present_entries else "None", inline=False)
-    embed.add_field(name=f"❌ Absent ({len(absent_entries)})", value="\n".join(absent_entries) if absent_entries else "None", inline=False)
-    embed.add_field(name=f"⚠️ Excused ({len(excused_entries)})", value="\n".join(excused_entries) if excused_entries else "None", inline=False)
-    embed.set_footer(text=f"Generated at {now_ph.strftime('%I:%M %p')} (PHT)")
+    # Helper to chunk list to avoid hitting Discord 1024 char limit
+    def format_list(entries):
+        if not entries:
+            return "None"
+        text = "\n".join(entries)
+        if len(text) > 1000:
+            return text[:950] + "\n... (truncated)"
+        return text
+
+    embed.add_field(name=f"✅  **Present**  ` {len(present_entries)} `", value=format_list(present_entries), inline=True)
+    embed.add_field(name=f"❌  **Absent**  ` {len(absent_entries)} `", value=format_list(absent_entries), inline=True)
+    embed.add_field(name=f"⚠️  **Excused**  ` {len(excused_entries)} `", value=format_list(excused_entries), inline=False)
+    
+    embed.set_footer(text=f"Last Updated: {now_ph.strftime('%I:%M %p')}", icon_url=guild.icon.url if guild.icon else None)
     
     return embed
 
@@ -800,14 +1081,14 @@ async def remove_present(ctx, member: discord.Member):
     Removes a user's present status/role so they can mark attendance again.
     Usage: !removepresent @User
     """
-    data = load_attendance_data()
+    data = load_attendance_data(ctx.guild.id)
     role_id = data.get('attendance_role_id')
     user_id = str(member.id)
     
     # Remove from records
     if 'records' in data and user_id in data['records']:
         del data['records'][user_id]
-        save_attendance_data(data)
+        save_attendance_data(ctx.guild.id, data)
     
     # Remove role
     if role_id:
@@ -818,57 +1099,148 @@ async def remove_present(ctx, member: discord.Member):
             except discord.Forbidden:
                 await ctx.send("Warning: Could not remove role (Missing Permissions).")
                 
-    await ctx.send(f"Reset attendance for {member.mention}. They can now say 'present' again.")
+    await ctx.send(f"Reset attendance for {member.mention}. You can now say 'present' again.")
 
 @bot.command(name='restartattendance', aliases=['resetattendance'])
-@commands.has_permissions(manage_roles=True)
+@commands.has_permissions(administrator=True)
 async def restart_attendance(ctx):
     """
-    Resets attendance for ALL users who are marked as present.
-    Removes the 'Present' role and clears their record, allowing them to check in again immediately.
+    Completely resets ALL attendance data and settings for this server.
+    Removes roles from present users, clears all records, and resets configuration.
     Usage: !restartattendance
     """
-    data = load_attendance_data()
-    records = data.get('records', {})
-    present_role_id = data.get('attendance_role_id')
-    
-    # Identify users to reset (only those marked as 'present')
-    users_to_reset = []
-    for uid, info in records.items():
-        # Handle migration/fallback
-        if isinstance(info, str):
-            info = {"status": "present"}
-        
-        if info.get('status', 'present') == 'present':
-            users_to_reset.append(uid)
-            
-    if not users_to_reset:
-        await ctx.send("No users are currently marked as present.")
+    embed = discord.Embed(title="⚠️ Confirm Full Reset", description="Are you sure you want to restart everything?\n\nThis will:\n1. Remove 'Present' role from all users.\n2. Delete ALL attendance records.\n3. Reset configuration (Time Window, Roles, Channels) to default.\n\nType `confirm` to proceed.", color=discord.Color.red())
+    await ctx.send(embed=embed)
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'confirm'
+
+    try:
+        await bot.wait_for('message', check=check, timeout=30.0)
+    except asyncio.TimeoutError:
+        await ctx.send("Reset cancelled (timed out).")
         return
-        
-    await ctx.send(f"Restarting attendance for {len(users_to_reset)} users... This may take a moment.")
+
+    # Proceed with reset
+    await ctx.send("🔄 Resetting attendance system... Please wait.")
     
-    # Remove roles
+    data = load_attendance_data(ctx.guild.id)
+    
+    # 1. Remove Roles
+    present_role_id = data.get('attendance_role_id')
     if present_role_id:
         role = ctx.guild.get_role(present_role_id)
         if role:
-            for uid in users_to_reset:
-                member = ctx.guild.get_member(int(uid))
-                if member and role in member.roles:
-                    try:
-                        await member.remove_roles(role)
-                    except discord.Forbidden:
-                        logger.warning(f"Failed to remove present role from {member.name} (Missing Permissions)")
-                    except Exception as e:
-                        logger.error(f"Error removing role from {uid}: {e}")
+            for member in role.members:
+                try:
+                    await member.remove_roles(role)
+                except: pass
+    
+    # 2. Wipe Data and Settings
+    # Create a fresh default structure
+    default_settings = {
+        "suffix_format": " [𝙼𝚂𝚄𝚊𝚗]",
+        "auto_nick_on_join": False,
+        "enforce_suffix": False,
+        "remove_suffix_on_role_loss": False,
+        "attendance_mode": "duration",
+        "attendance_expiry_hours": 12,
+        "allow_self_marking": True,
+        "require_admin_excuse": False,
+        "window_start_time": "08:00",
+        "window_end_time": "17:00",
+        "last_processed_date": None
+    }
 
-    # Clear records
-    for uid in users_to_reset:
-        if uid in data['records']:
-            del data['records'][uid]
+    fresh_data = {
+        "attendance_role_id": None,
+        "absent_role_id": None,
+        "excused_role_id": None,
+        "welcome_channel_id": None,
+        "report_channel_id": None,
+        "records": {},
+        "settings": default_settings
+    }
+    
+    save_attendance_data(ctx.guild.id, fresh_data)
+    
+    # Attempt to post a fresh, empty report to the report channel
+    report_channel_id = data.get('report_channel_id')
+    if report_channel_id:
+        channel = ctx.guild.get_channel(report_channel_id)
+        if channel:
+            try:
+                # Create a temporary guild object or just call the function since it only needs ID for loading data
+                # but create_attendance_embed uses guild.get_member etc.
+                # Since we are in ctx, we can use ctx.guild
+                embed = create_attendance_embed(ctx.guild)
+                await channel.send(embed=embed)
+            except:
+                pass
+
+    await ctx.send("✅ **System Reset Complete.**\nAll data has been cleared. You can now reconfigure the bot using `!settime`, `!assignchannel`, etc.")
+
+async def refresh_attendance_report(guild, target_channel=None):
+    """
+    Deletes the previous report (if tracked) and sends a new one to the target channel.
+    If target_channel is None, it tries to use the configured report channel.
+    Updates the tracked message ID.
+    """
+    data = load_attendance_data(guild.id)
+    
+    # 1. Delete Old Report
+    last_msg_id = data.get('last_report_message_id')
+    last_chan_id = data.get('last_report_channel_id')
+    
+    if last_msg_id and last_chan_id:
+        try:
+            # SAFETY CHECK: Ensure the channel belongs to the same guild
+            old_chan = guild.get_channel(last_chan_id)
+            if old_chan and old_chan.guild.id == guild.id:
+                try:
+                    old_msg = await old_chan.fetch_message(last_msg_id)
+                    await old_msg.delete()
+                except (discord.NotFound, discord.Forbidden):
+                    pass
+        except Exception as e:
+            logger.error(f"Error deleting old report in {guild.name}: {e}")
+            pass
             
-    save_attendance_data(data)
-    await ctx.send(f"✅ Attendance restarted! {len(users_to_reset)} users have been reset and can say 'present' again.")
+    # 2. Determine Target Channel
+    channel = target_channel
+    if not channel:
+        report_channel_id = data.get('report_channel_id')
+        if report_channel_id:
+            channel = guild.get_channel(report_channel_id)
+            
+    if not channel:
+        # Fallback
+        welcome_channel_id = data.get('welcome_channel_id')
+        if welcome_channel_id:
+             channel = guild.get_channel(welcome_channel_id)
+        elif guild.system_channel:
+             channel = guild.system_channel
+
+    if not channel:
+        return None # Nowhere to send
+
+    # SAFETY CHECK: Ensure target channel belongs to the guild
+    if channel.guild.id != guild.id:
+        logger.error(f"Security Alert: Attempted to post report for {guild.name} to channel in {channel.guild.name}!")
+        return None
+        
+    # 3. Send New Report
+    embed = create_attendance_embed(guild)
+    try:
+        new_msg = await channel.send(embed=embed)
+        
+        # 4. Update Tracking
+        data['last_report_message_id'] = new_msg.id
+        data['last_report_channel_id'] = channel.id
+        save_attendance_data(guild.id, data)
+        return new_msg
+    except discord.Forbidden:
+        return None
 
 @bot.command(name='attendance')
 async def view_attendance(ctx):
@@ -876,8 +1248,7 @@ async def view_attendance(ctx):
     View the current attendance lists.
     Usage: !attendance
     """
-    embed = create_attendance_embed(ctx.guild)
-    await ctx.send(embed=embed)
+    await refresh_attendance_report(ctx.guild, ctx.channel)
 
 @assign_attendance_role.error
 async def assign_role_error(ctx, error):
@@ -890,27 +1261,152 @@ async def assign_role_error(ctx, error):
 
 @tasks.loop(minutes=1)
 async def check_attendance_expiry():
-    # Use load_settings to get defaults correctly (default expiry is 12h)
-    settings = load_settings()
-    expiry_hours = settings.get("attendance_expiry_hours", 12)
-    
-    data = load_attendance_data()
-    records = data.get('records', {})
-    
-    # Get all role IDs
-    role_map = {
-        'present': data.get('attendance_role_id'),
-        'absent': data.get('absent_role_id'),
-        'excused': data.get('excused_role_id')
-    }
-    ping_role_id = data.get('ping_role_id')
-
-    now = datetime.datetime.now()
-    users_to_remove = []
-    users_to_update = {} # New: for state transitions (present -> absent)
-    
-    # Iterate over guilds
+    # Iterate over guilds first, then load data for each
     for guild in bot.guilds:
+        settings = load_settings(guild.id)
+        data = load_attendance_data(guild.id)
+        
+        mode = settings.get('attendance_mode', 'duration')
+        expiry_hours = settings.get("attendance_expiry_hours", 12)
+        records = data.get('records', {})
+        
+        # --- End of Day / Session Logic (Window Mode) ---
+        if mode == 'window':
+            start_str = settings.get('window_start_time', '00:00')
+            end_str = settings.get('window_end_time', '23:59')
+            last_processed = settings.get('last_processed_date') # e.g., "2024-02-01"
+            
+            try:
+                # Helper to convert HH:MM to datetime for today/yesterday
+                now = datetime.datetime.now()
+                today_str = now.strftime("%Y-%m-%d")
+                
+                t_start = datetime.datetime.strptime(start_str, "%H:%M").time()
+                t_end = datetime.datetime.strptime(end_str, "%H:%M").time()
+                
+                # Construct datetime objects for comparison
+                dt_start = datetime.datetime.combine(now.date(), t_start)
+                dt_end = datetime.datetime.combine(now.date(), t_end)
+                
+                # --- START OF WINDOW LOGIC ---
+                # Automatically post/refresh report when window opens
+                last_opened = settings.get('last_opened_date')
+                
+                if now >= dt_start and now < dt_end:
+                     if last_opened != today_str:
+                         logger.info(f"Opening attendance window for {guild.name}")
+                         await refresh_attendance_report(guild)
+                         settings['last_opened_date'] = today_str
+                         save_settings(guild.id, settings)
+                
+                target_date_to_process = None
+                
+                # Check 1: Post-Shift (Same Day)
+                # If we are past the end time today
+                if now > dt_end:
+                    target_date_to_process = today_str
+                    
+                # Check 2: Pre-Shift (Next Day / Overnight)
+                # If we are before the start time, we might need to close out yesterday
+                # (Logic: If we haven't closed out yesterday, do it now)
+                elif now < dt_start:
+                    yesterday = now - datetime.timedelta(days=1)
+                    target_date_to_process = yesterday.strftime("%Y-%m-%d")
+
+                # Handle Cross-Midnight windows (Start > End, e.g. 22:00 to 06:00)
+                # Not fully supported by this simple logic yet, but user asked for 6am-11:59pm
+                
+                if target_date_to_process and last_processed != target_date_to_process:
+                    logger.info(f"Triggering End-of-Day for {guild.name} (Date: {target_date_to_process})")
+                    
+                    # 1. Auto-Absent Logic
+                    allowed_role_id = data.get('allowed_role_id')
+                    absent_role_id = data.get('absent_role_id')
+                    
+                    if allowed_role_id:
+                        allowed_role = guild.get_role(allowed_role_id)
+                        if allowed_role:
+                            # Identify missing users
+                            present_ids = set(records.keys())
+                            missing_members = [m for m in allowed_role.members if str(m.id) not in present_ids and not m.bot]
+                            
+                            # Mark them absent
+                            if missing_members:
+                                absent_role = guild.get_role(absent_role_id) if absent_role_id else None
+                                
+                                for member in missing_members:
+                                    # Add to records
+                                    records[str(member.id)] = {
+                                        "status": "absent",
+                                        "timestamp": now.isoformat(),
+                                        "reason": "Auto-marked at end of attendance window"
+                                    }
+                                    
+                                    # Give absent role
+                                    if absent_role:
+                                        try:
+                                            await member.add_roles(absent_role)
+                                        except discord.Forbidden:
+                                            pass
+                                            
+                                logger.info(f"Marked {len(missing_members)} users as absent in {guild.name}")
+                    else:
+                        logger.warning(f"Cannot auto-mark absences for {guild.name}: No 'allowed_role' configured.")
+                    
+                    # 2. Generate and Post Report
+                    # Save data first so embed is accurate
+                    data['records'] = records
+                    save_attendance_data(guild.id, data)
+                    
+                    await refresh_attendance_report(guild)
+
+                    # 3. Reset/Clear Data ("Old attendance will be out")
+                    # Remove 'present' roles
+                    present_role_id = data.get('attendance_role_id')
+                    if present_role_id:
+                        role = guild.get_role(present_role_id)
+                        if role:
+                            for uid in list(records.keys()):
+                                member = guild.get_member(int(uid))
+                                if member and role in member.roles:
+                                    try:
+                                        await member.remove_roles(role)
+                                    except: pass
+
+                    # Clear Records
+                    data['records'] = {}
+                    
+                    # Update Settings
+                    settings['last_processed_date'] = target_date_to_process
+                    save_settings(guild.id, settings)
+                    save_attendance_data(guild.id, data)
+                    
+                    logger.info(f"Attendance reset complete for {guild.name}")
+                    
+            except ValueError as e:
+                logger.error(f"Error parsing time settings for {guild.name}: {e}")
+                
+        # --- End of Window Logic ---
+        
+        # Determine if we should expire individual users (Duration Mode Only)
+        # Window mode now handles bulk expiry/reset above.
+        if mode == 'window':
+            continue 
+
+        # ... Existing Duration Mode Logic Below ...
+        
+        # Get all role IDs
+        role_map = {
+            'present': data.get('attendance_role_id'),
+            'absent': data.get('absent_role_id'),
+            'excused': data.get('excused_role_id')
+        }
+        ping_role_id = data.get('ping_role_id')
+    
+        now = datetime.datetime.now()
+        users_to_remove = []
+        users_to_update = {} 
+
         for user_id_str, info in records.items():
             # Handle migration/fallback
             if isinstance(info, str):
@@ -926,12 +1422,20 @@ async def check_attendance_expiry():
                 continue
 
             try:
-                # Handle ISO format
-                # Be robust to non-string timestamps by coercing to string
                 timestamp = datetime.datetime.fromisoformat(str(timestamp_str))
+                should_expire = False
                 
-                # Check if X hours have passed
-                if now - timestamp > datetime.timedelta(hours=expiry_hours):
+                if mode == 'window':
+                    # In window mode, we expire if we are outside the window AND they are still present
+                    # We assume if they are 'present', they haven't been expired yet.
+                    if expire_all_present and status == 'present':
+                        should_expire = True
+                else:
+                    # Duration mode
+                    if now - timestamp > datetime.timedelta(hours=expiry_hours):
+                        should_expire = True
+
+                if should_expire:
                     user_id = int(user_id_str)
                     member = guild.get_member(user_id)
                     
@@ -966,13 +1470,13 @@ async def check_attendance_expiry():
                         # Schedule update to 'absent'
                         users_to_update[user_id_str] = {
                             "status": "absent",
-                            "timestamp": now.isoformat(), # Reset timer for absent status
+                            "timestamp": now.isoformat(), 
                             "channel_id": channel_id
                         }
 
                         # Notify
                         if channel:
-                            msg_content = f"{member.mention}, your attendance session has expired (12 hours)."
+                            msg_content = f"{member.mention}, your attendance session has expired."
                             if ping_role_id:
                                 ping_role = guild.get_role(ping_role_id)
                                 if ping_role:
@@ -988,26 +1492,32 @@ async def check_attendance_expiry():
                 logger.error(f"Error parsing timestamp for user {user_id_str}: {e}")
                 users_to_remove.append(user_id_str)
 
-    # Apply Updates
-    if users_to_update:
-        for uid, new_record in users_to_update.items():
-            data['records'][uid] = new_record
-            
-    # Apply Removals (only if not updated)
-    if users_to_remove:
-        # Remove duplicates
-        users_to_remove = list(set(users_to_remove))
-        for uid in users_to_remove:
-            if uid in data['records'] and uid not in users_to_update:
-                del data['records'][uid]
+        # Apply Updates
+        if users_to_update:
+            for uid, new_record in users_to_update.items():
+                data['records'][uid] = new_record
                 
-    if users_to_update or users_to_remove:
-        save_attendance_data(data)
+        # Apply Removals
+        if users_to_remove:
+            users_to_remove = list(set(users_to_remove))
+            for uid in users_to_remove:
+                if uid in data['records'] and uid not in users_to_update:
+                    del data['records'][uid]
+                    
+        if users_to_update or users_to_remove:
+            save_attendance_data(guild.id, data)
 
 @bot.event
 async def on_ready():
     logger.info(f'Logged in as {bot.user.name}')
     logger.info('Bot is ready to auto-nickname users!')
+    
+    # Initialize Database
+    try:
+        database.init_db()
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        
     if not check_attendance_expiry.is_running():
         check_attendance_expiry.start()
     
@@ -1059,14 +1569,21 @@ class AttendanceView(discord.ui.View):
     async def handle_attendance(self, interaction, status, reason=None):
         user = interaction.user
         
+        # Check Window (only for present)
+        if status == 'present':
+            allowed, msg = is_in_attendance_window(interaction.guild.id)
+            if not allowed:
+                 await interaction.response.send_message(msg, ephemeral=True)
+                 return
+
         # Check self-marking setting (only for present)
-        settings = load_settings()
+        settings = load_settings(interaction.guild.id)
         if status == 'present' and not settings.get('allow_self_marking', True):
              await interaction.response.send_message("Self-marking is currently disabled.", ephemeral=True)
              return
 
         # Check permitted role
-        data = load_attendance_data()
+        data = load_attendance_data(interaction.guild.id)
         allowed_role_id = data.get('allowed_role_id')
         if allowed_role_id:
             allowed_role = interaction.guild.get_role(allowed_role_id)
@@ -1092,7 +1609,7 @@ class AttendanceView(discord.ui.View):
 
     async def process_status_update(self, interaction, member, status, reason=None):
         # Logic duplicated/adapted from update_user_status to avoid ctx dependency
-        data = load_attendance_data()
+        data = load_attendance_data(interaction.guild.id)
         present_role_id = data.get('attendance_role_id')
         absent_role_id = data.get('absent_role_id')
         excused_role_id = data.get('excused_role_id')
@@ -1140,7 +1657,39 @@ class AttendanceView(discord.ui.View):
             record["reason"] = reason
             
         data['records'][user_id] = record
-        save_attendance_data(data)
+        save_attendance_data(interaction.guild.id, data)
+
+        # Update Report
+        await refresh_attendance_report(interaction.guild)
+
+        # Send DM if present
+        if status == 'present':
+             try:
+                 await member.send("Your attendance has been checked. You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.")
+             except:
+                 pass
+
+@bot.command(name='assignchannel')
+@commands.has_permissions(administrator=True)
+async def assign_report_channel(ctx, channel: discord.TextChannel = None):
+    """
+    Sets the channel where attendance reports will be sent.
+    Usage: !assignchannel #channel-name
+    """
+    if channel is None:
+        await ctx.send("❌ Usage: `!assignchannel #channel` (e.g. `!assignchannel #reports`)")
+        return
+
+    try:
+        data = load_attendance_data(ctx.guild.id)
+        data['report_channel_id'] = channel.id
+        save_attendance_data(ctx.guild.id, data)
+        
+        logger.info(f"Report channel set to {channel.name} ({channel.id}) for guild {ctx.guild.id}")
+        await ctx.send(f"✅ Attendance reports will now be sent to {channel.mention}.")
+    except Exception as e:
+        logger.error(f"Error assigning channel: {e}", exc_info=True)
+        await ctx.send(f"❌ Failed to assign channel: {e}")
 
 @bot.command(name='setup_attendance')
 @commands.has_permissions(administrator=True)
@@ -1155,10 +1704,37 @@ async def setup_attendance_ui(ctx):
 
 
 @bot.event
+async def on_command_error(ctx, error):
+    """Global error handler to catch and report errors to the user."""
+    if isinstance(error, commands.CommandNotFound):
+        # Ignore unknown commands
+        return
+        
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ You do not have permission to use this command.")
+        return
+        
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f"❌ Missing required argument. Usage: `{ctx.prefix}{ctx.command.name} {ctx.command.signature}`")
+        return
+        
+    if isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Invalid argument provided. Please check your input.")
+        return
+    
+    # Log the full error
+    logger.error(f"Command error in {ctx.command}: {error}", exc_info=True)
+    await ctx.send(f"❌ An error occurred while executing the command: `{error}`")
+
+@bot.event
 async def on_message(message):
     # Don't let the bot reply to itself
     if message.author == bot.user:
         return
+    
+    # Debug log to ensure we are receiving messages
+    if message.content.startswith('!'):
+        logger.info(f"Command-like message received from {message.author}: {message.content}")
 
     # Process commands first (important!)
     await bot.process_commands(message)
@@ -1167,7 +1743,24 @@ async def on_message(message):
 
     # Attendance check logic
     if msg_content == "present":
-        data = load_attendance_data()
+        if not message.guild:
+            return
+
+        settings = load_settings(message.guild.id)
+        
+        # Check Window
+        allowed, window_msg = is_in_attendance_window(message.guild.id)
+        if not allowed:
+            await message.channel.send(window_msg, delete_after=5)
+            return
+
+        if not settings.get('allow_self_marking', True):
+            # If self-marking is disabled, we ignore the message or warn?
+            # Warn is better UX
+            await message.channel.send("Self-marking is currently disabled.", delete_after=5)
+            return
+
+        data = load_attendance_data(message.guild.id)
         
         # Check permissions
         allowed_role_id = data.get('allowed_role_id')
@@ -1215,7 +1808,7 @@ async def on_message(message):
                             "timestamp": now.isoformat(),
                             "channel_id": message.channel.id
                         }
-                        save_attendance_data(data)
+                        save_attendance_data(message.guild.id, data)
                         
                         await message.channel.send(f"Attendance marked for {message.author.mention}! You have been given the {role.name} role.", delete_after=10)
                         
@@ -1224,15 +1817,26 @@ async def on_message(message):
                             await message.author.send("Your attendance has been checked. You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.")
                         except discord.Forbidden:
                             logger.warning(f"Could not DM user {message.author.name} (Closed DMs)")
+                        except Exception:
+                            pass
 
                         # Automatically show the attendance report
-                        embed = create_attendance_embed(message.guild)
-                        await message.channel.send(embed=embed)
+                        await refresh_attendance_report(message.guild)
                     except discord.Forbidden:
                         await message.channel.send("I tried to give you the role, but I don't have permission! Please check my role hierarchy.")
 
     elif msg_content.startswith("excuse"):
-        data = load_attendance_data()
+        if not message.guild:
+            return
+            
+        settings = load_settings(message.guild.id)
+        if settings.get('require_admin_excuse', True):
+            # Check if user has manage_roles
+            if not message.author.guild_permissions.manage_roles:
+                await message.channel.send("Only admins can excuse users.", delete_after=5)
+                return
+
+        data = load_attendance_data(message.guild.id)
         attendance_role_id = data.get('attendance_role_id')
         absent_role_id = data.get('absent_role_id')
         excused_role_id = data.get('excused_role_id')
@@ -1277,13 +1881,12 @@ async def on_message(message):
                             "channel_id": message.channel.id,
                             "reason": reason
                         }
-                        save_attendance_data(data)
+                        save_attendance_data(message.guild.id, data)
                         
                         await message.channel.send(f"Excused status marked for {message.author.mention}! Reason: {reason}", delete_after=10)
                         
                         # Automatically show the attendance report
-                        embed = create_attendance_embed(message.guild)
-                        await message.channel.send(embed=embed)
+                        await refresh_attendance_report(message.guild)
                     except discord.Forbidden:
                         await message.channel.send("I tried to give you the role, but I don't have permission! Please check my role hierarchy.")
 

@@ -1,52 +1,39 @@
-# How to Host Your Bot 24/7 for Free
+# How to Host Your Bot 24/7 on Render
 
-To keep your bot running 24/7 without your computer being on, you need to host it on a cloud server. Here is the easiest free method using **Render**.
+To keep your bot running 24/7, you need to host it on a cloud server.
 
-## Prerequisites
-- A [Render.com](https://render.com) account.
-- A [GitHub](https://github.com) account.
-- Your Discord Bot Token.
+## 🚨 IMPORTANT: Data Persistence 🚨
+This bot uses a local SQLite database (`attendance.db`). 
+- **On Render's Free Tier**, the filesystem is **ephemeral**. This means **all attendance data will be deleted** every time the bot restarts or redeploys.
+- **To save data permanently**, you must use a **Render Disk** (Paid Feature) or switch to an external database.
 
-## Deployment Steps
+## Method 1: Automatic Deployment (Recommended for Persistence)
+This method uses the included `render.yaml` file to set up a Persistent Disk automatically. **(Requires Render Paid Plan)**
 
-1. **Fork/Clone this Repository**: Ensure you have this code in your own GitHub repository.
-2. **Create a New Web Service on Render**:
-   - Go to your Render Dashboard.
-   - Click **New +** -> **Web Service**.
-   - Connect your GitHub repository.
-3. **Configure the Service**:
-   - **Name**: Give your bot a name.
+1. **Fork/Clone this Repository** to your GitHub.
+2. Go to [Render Dashboard](https://dashboard.render.com/).
+3. Click **New +** -> **Blueprint**.
+4. Connect your repository.
+5. Render will automatically detect the `render.yaml` configuration.
+6. Click **Apply**.
+7. **Environment Variables**: You may need to enter your `DISCORD_TOKEN` in the dashboard if prompted, or add it manually in the "Environment" tab of the service after creation.
+
+## Method 2: Free Tier (No Persistence)
+If you only need the bot for testing and don't care about losing data on restart:
+
+1. **Create a New Web Service** on Render.
+2. Connect your GitHub repo.
+3. **Settings**:
    - **Runtime**: Python 3
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `python bot.py`
-   - **Plan**: Free
 4. **Environment Variables**:
-   - Scroll down to "Environment Variables".
-   - Add Key: `DISCORD_TOKEN`
-   - Value: (Paste your actual bot token here)
-   - Add Key: `PYTHON_VERSION` (Optional, code handles this via .python-version file now)
-   - Value: `3.10.12`
-5. **Deploy**: Click **Create Web Service**.
+   - `DISCORD_TOKEN`: Your bot token.
+   - `PYTHON_VERSION`: `3.10.12`
 
-## Troubleshooting
-- **Bot not starting?** Check the "Logs" tab in Render.
-- **"Invalid Syntax"?** Ensure Render is using Python 3.10+ (The included `.python-version` file should handle this).
-- **Attendance not saving?** On the free tier, files are not persistent. Settings will reset if the bot restarts.
+## Prevent "Sleeping" (Free Tier Only)
+Free servers sleep after 15 minutes. Use [UptimeRobot](https://uptimerobot.com/) to ping your Render URL every 5 minutes.
 
----
-
-## Prevent "Sleeping" (Important)
-Free servers go to sleep after 15 minutes of inactivity. To keep it awake 24/7:
-
-1. Go to [UptimeRobot.com](https://uptimerobot.com/) and create a free account.
-2. Click **"Add New Monitor"**.
-3. **Monitor Type:** Select `HTTP(s)`.
-4. **Friendly Name:** `My Discord Bot`.
-5. **URL (or IP):** Paste the Render App URL you copied earlier.
-6. **Monitoring Interval:** Set to `5 minutes`.
-7. Click **"Create Monitor"**.
-
-Now UptimeRobot will "ping" your bot every 5 minutes, ensuring it never goes to sleep.
 
 ## How to Update/Redeploy
 When you make changes to your code (like the recent timezone update):

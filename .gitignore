@@ -6,3 +6,5 @@ __pycache__/
 env/
 venv/
 *.log
+attendance.db
+legacy_json_backup/
