@@ -341,8 +341,14 @@ async def set_attendance_time(ctx, *, time_input: str = None):
         
         save_settings(ctx.guild.id, settings)
         
+        # Convert to 12-hour format for confirmation message
+        dt_start = datetime.datetime.strptime(s_parsed, "%H:%M")
+        dt_end = datetime.datetime.strptime(e_parsed, "%H:%M")
+        display_s = dt_start.strftime("%I:%M %p").lstrip('0')
+        display_e = dt_end.strftime("%I:%M %p").lstrip('0')
+        
         logger.info(f"Successfully saved settings: {s_parsed} - {e_parsed}")
-        await ctx.send(f"✅ Attendance time set to **{s_parsed} - {e_parsed}**. Mode switched to 'Window'.")
+        await ctx.send(f"✅ Attendance time set to **{display_s} - {display_e}**. Mode switched to 'Window'.")
         
         # Check if allowed_role is set for auto-absence
         data = load_attendance_data(ctx.guild.id)
@@ -351,7 +357,7 @@ async def set_attendance_time(ctx, *, time_input: str = None):
                            "Bot cannot determine who is 'missing' without it. \n"
                            "Please run `!setpermitrole @Role` (e.g., @Student) so the bot knows who should be marked absent if they don't show up.")
         
-        await ctx.send(f"Bot will now automatically mark absences and reset attendance after {e_parsed}.")
+        await ctx.send(f"Bot will now automatically mark absences and reset attendance after {display_e}.")
         
     except Exception as e:
         logger.error(f"Critical error in set_attendance_time: {e}", exc_info=True)
@@ -931,7 +937,10 @@ def is_in_attendance_window(guild_id):
             in_window = now >= t_start or now <= t_end
             
         if not in_window:
-            return False, f"Attendance is only allowed between {start_str} and {end_str}."
+            # Convert to 12-hour format for display
+            display_start = t_start.strftime("%I:%M %p").lstrip('0')
+            display_end = t_end.strftime("%I:%M %p").lstrip('0')
+            return False, f"Attendance is only allowed between {display_start} and {display_end}."
             
         return True, None
     except ValueError:
@@ -1674,6 +1683,12 @@ class AttendanceView(discord.ui.View):
                     description="Your attendance has been checked successfully.",
                     color=discord.Color.green()
                  )
+                 if interaction.guild.icon:
+                     embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url)
+                     embed.set_thumbnail(url=interaction.guild.icon.url)
+                 else:
+                     embed.set_author(name=interaction.guild.name)
+
                  embed.add_field(name="Status", value="Present", inline=True)
                  embed.add_field(name="Note", value="You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.", inline=False)
                  embed.set_footer(text=f"Server: {interaction.guild.name}")
@@ -1831,6 +1846,12 @@ async def on_message(message):
                                 description="Your attendance has been checked successfully.",
                                 color=discord.Color.green()
                             )
+                            if message.guild.icon:
+                                embed.set_author(name=message.guild.name, icon_url=message.guild.icon.url)
+                                embed.set_thumbnail(url=message.guild.icon.url)
+                            else:
+                                embed.set_author(name=message.guild.name)
+
                             embed.add_field(name="Status", value="Present", inline=True)
                             embed.add_field(name="Note", value="You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.", inline=False)
                             embed.set_footer(text=f"Server: {message.guild.name}")
