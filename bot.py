@@ -1021,7 +1021,7 @@ def create_attendance_embed(guild):
     ph_tz = datetime.timezone(datetime.timedelta(hours=8))
     now_ph = datetime.datetime.now(ph_tz)
 
-    embed = discord.Embed(title=f"📅 Attendance Report - {guild.name}", color=discord.Color.gold())
+    embed = discord.Embed(title="Daily Attendance Report", color=discord.Color.gold())
     if guild.icon:
         embed.set_author(name=guild.name, icon_url=guild.icon.url)
         embed.set_thumbnail(url=guild.icon.url)
@@ -1082,7 +1082,7 @@ def create_attendance_embed(guild):
     embed.add_field(name=f"❌  **Absent**  ` {len(absent_entries)} `", value=format_list(absent_entries), inline=True)
     embed.add_field(name=f"⚠️  **Excused**  ` {len(excused_entries)} `", value=format_list(excused_entries), inline=False)
     
-    embed.set_footer(text=f"Last Updated: {now_ph.strftime('%I:%M %p')}", icon_url=guild.icon.url if guild.icon else None)
+    embed.set_footer(text=f"Created by Calvin • Last Updated: {now_ph.strftime('%I:%M %p')}", icon_url=guild.icon.url if guild.icon else None)
     
     return embed
 
@@ -1691,7 +1691,7 @@ class AttendanceView(discord.ui.View):
 
                  embed.add_field(name="Status", value="Present", inline=True)
                  embed.add_field(name="Note", value="You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.", inline=False)
-                 embed.set_footer(text=f"Server: {interaction.guild.name}")
+                 embed.set_footer(text=f"Created by Calvin • Server: {interaction.guild.name}")
                  await member.send(embed=embed)
              except:
                  pass
@@ -1854,7 +1854,7 @@ async def on_message(message):
 
                             embed.add_field(name="Status", value="Present", inline=True)
                             embed.add_field(name="Note", value="You will be notified once the 12-hour period has expired, after which you will be allowed to mark yourself as present again.", inline=False)
-                            embed.set_footer(text=f"Server: {message.guild.name}")
+                            embed.set_footer(text=f"Created by Calvin • Server: {message.guild.name}")
                             await message.author.send(embed=embed)
                         except discord.Forbidden:
                             logger.warning(f"Could not DM user {message.author.name} (Closed DMs)")
