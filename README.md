@@ -88,7 +88,7 @@ Use `!settings` to open the interactive configuration panel. You can toggle:
 | Command | Description |
 | :--- | :--- |
 | `!settings` | Open the interactive settings dashboard. |
-| `!settime <Start> - <End>` | Set attendance window (e.g., `!settime 8am - 5pm`). |
+| `!settime <Start> - <End>` | Set attendance window (e.g., `!settime 8am - 5pm`). **Note:** Uses Philippines Time (UTC+8). |
 | `!assignchannel #channel` | Set the channel for live attendance reports. |
 | `!setup_attendance` | Create a persistent "Check-In" message with buttons. |
 
@@ -105,7 +105,7 @@ Use `!settings` to open the interactive configuration panel. You can toggle:
 ### ⚠️ System Commands (Admin)
 | Command | Description |
 | :--- | :--- |
-| `!restartattendance` | **Full Reset**: Clears all records, removes roles, and resets settings. |
+| `!restartattendance` | **Full Reset**: Clears all records, removes roles, and resets settings. (Alias: `!resetattendance`) |
 
 ## Deployment (Render)
 
