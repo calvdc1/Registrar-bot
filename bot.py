@@ -919,7 +919,10 @@ def is_in_attendance_window(guild_id):
     try:
         t_start = datetime.datetime.strptime(start_str, "%H:%M").time()
         t_end = datetime.datetime.strptime(end_str, "%H:%M").time()
-        now = datetime.datetime.now().time()
+        
+        # Use Philippines Time (UTC+8)
+        ph_tz = datetime.timezone(datetime.timedelta(hours=8))
+        now = datetime.datetime.now(ph_tz).time()
         
         in_window = False
         if t_start <= t_end:
@@ -1277,16 +1280,17 @@ async def check_attendance_expiry():
             last_processed = settings.get('last_processed_date') # e.g., "2024-02-01"
             
             try:
-                # Helper to convert HH:MM to datetime for today/yesterday
-                now = datetime.datetime.now()
+                # Use Philippines Time (UTC+8)
+                ph_tz = datetime.timezone(datetime.timedelta(hours=8))
+                now = datetime.datetime.now(ph_tz)
                 today_str = now.strftime("%Y-%m-%d")
                 
                 t_start = datetime.datetime.strptime(start_str, "%H:%M").time()
                 t_end = datetime.datetime.strptime(end_str, "%H:%M").time()
                 
-                # Construct datetime objects for comparison
-                dt_start = datetime.datetime.combine(now.date(), t_start)
-                dt_end = datetime.datetime.combine(now.date(), t_end)
+                # Construct datetime objects for comparison (make them timezone-aware)
+                dt_start = datetime.datetime.combine(now.date(), t_start).replace(tzinfo=ph_tz)
+                dt_end = datetime.datetime.combine(now.date(), t_end).replace(tzinfo=ph_tz)
                 
                 # --- START OF WINDOW LOGIC ---
                 # Automatically post/refresh report when window opens
